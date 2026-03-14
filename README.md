@@ -211,6 +211,31 @@ git-closure query dotfiles.gcl '**/*.nix'
 git-closure watch ~/dotfiles
 ```
 
+### Provider Architecture (v0.1)
+
+`git-closure build` accepts either local paths or remote sources via a provider layer.
+
+- `local` provider reads from local directories.
+- `git-clone` provider performs a shallow clone (`--depth 1`) and snapshots the checkout.
+- `nix` provider runs `nix flake metadata <ref> --json`, reads the returned `path`, then snapshots that deterministic store path.
+- `github-api` provider currently reuses `git-clone` for reliability in v0.1.
+- `auto` provider selection prefers: local path -> nix flake reference -> github source -> git clone fallback.
+
+Supported shorthand examples:
+
+```bash
+git-closure build gh:owner/repo@main -o repo.gcl
+git-closure build gl:group/project -o project.gcl
+git-closure build nix:github:NixOS/nixpkgs/nixos-unstable -o nixpkgs.gcl
+```
+
+You can force a provider explicitly:
+
+```bash
+git-closure build gh:owner/repo -o repo.gcl --provider git-clone
+git-closure build github:NixOS/nixpkgs -o nixpkgs.gcl --provider nix
+```
+
 ### File Selection Semantics (v0.1)
 
 `git-closure` intentionally mimics Nix local Git source behavior for deterministic snapshots:

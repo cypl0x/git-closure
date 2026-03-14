@@ -12,6 +12,10 @@ use base64::Engine;
 use ignore::WalkBuilder;
 use sha2::{Digest, Sha256};
 
+pub mod providers;
+
+use providers::{fetch_source, Provider, ProviderKind};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SnapshotFile {
     path: String,
@@ -44,6 +48,26 @@ impl Default for BuildOptions {
 
 pub fn build_snapshot(source: &Path, output: &Path) -> Result<()> {
     build_snapshot_with_options(source, output, &BuildOptions::default())
+}
+
+pub fn build_snapshot_from_source(
+    source: &str,
+    output: &Path,
+    options: &BuildOptions,
+    provider_kind: ProviderKind,
+) -> Result<()> {
+    let fetched = fetch_source(source, provider_kind)?;
+    build_snapshot_with_options(&fetched.root, output, options)
+}
+
+pub fn build_snapshot_from_provider<P: Provider>(
+    provider: &P,
+    source: &str,
+    output: &Path,
+    options: &BuildOptions,
+) -> Result<()> {
+    let fetched = provider.fetch(source)?;
+    build_snapshot_with_options(&fetched.root, output, options)
 }
 
 pub fn build_snapshot_with_options(
@@ -790,9 +814,10 @@ fn sanitized_relative_path(path: &str) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_snapshot, build_snapshot_with_options, materialize_snapshot, verify_snapshot,
-        BuildOptions,
+        build_snapshot, build_snapshot_from_provider, build_snapshot_with_options,
+        materialize_snapshot, verify_snapshot, BuildOptions,
     };
+    use crate::providers::{FetchedSource, Provider};
     use std::fs;
     use std::io::Write;
     use std::path::Path;
@@ -897,6 +922,40 @@ mod tests {
     }
 
     #[test]
+    fn remote_build_round_trip_with_mock_provider() {
+        let fixture = TempDir::new().expect("create fixture tempdir");
+        fs::write(fixture.path().join("a.txt"), b"hello\n").expect("write fixture file");
+        fs::create_dir_all(fixture.path().join("nested")).expect("create nested fixture dir");
+        fs::write(fixture.path().join("nested").join("b.txt"), b"world\n")
+            .expect("write nested fixture file");
+
+        let provider = MockProvider {
+            root: fixture.path().to_path_buf(),
+        };
+
+        let work = TempDir::new().expect("create working tempdir");
+        let restored = TempDir::new().expect("create restored tempdir");
+
+        let snapshot_a = work.path().join("remote-a.gcl");
+        let snapshot_b = work.path().join("remote-b.gcl");
+
+        build_snapshot_from_provider(
+            &provider,
+            "mock://example/repo",
+            &snapshot_a,
+            &BuildOptions::default(),
+        )
+        .expect("build snapshot from mock provider");
+        materialize_snapshot(&snapshot_a, restored.path()).expect("materialize mock snapshot");
+        build_snapshot(restored.path(), &snapshot_b)
+            .expect("build local snapshot after materialize");
+
+        let a = fs::read(&snapshot_a).expect("read remote snapshot");
+        let b = fs::read(&snapshot_b).expect("read rebuilt local snapshot");
+        assert_eq!(a, b, "remote->materialize->local snapshots differ");
+    }
+
+    #[test]
     fn git_mode_excludes_untracked_by_default() {
         let repo = TempDir::new().expect("create temp repo");
         init_git_repo(repo.path());
@@ -987,6 +1046,19 @@ mod tests {
             .status()
             .expect("failed to run git command");
         assert!(status.success(), "git command failed: git {:?}", args);
+    }
+
+    struct MockProvider {
+        root: std::path::PathBuf,
+    }
+
+    impl Provider for MockProvider {
+        fn fetch(&self, source: &str) -> anyhow::Result<FetchedSource> {
+            if source != "mock://example/repo" {
+                anyhow::bail!("unexpected mock source: {source}");
+            }
+            Ok(FetchedSource::local(self.root.clone()))
+        }
     }
 }
 ||||||| parent of 8191579 (feat: add deterministic build and materialize commands)
