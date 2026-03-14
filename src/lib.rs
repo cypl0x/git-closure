@@ -763,6 +763,50 @@ pub fn materialize_snapshot(snapshot: &Path, output: &Path) -> Result<()> {
     Ok(())
 }
 
+pub fn verify_snapshot(snapshot: &Path) -> Result<()> {
+    let text = fs::read_to_string(snapshot)
+        .with_context(|| format!("failed to read snapshot: {}", snapshot.display()))?;
+
+    let (header, files) = parse_snapshot(&text)?;
+
+    let recomputed = compute_format_hash(&files);
+    if recomputed != header.format_hash {
+        bail!(
+            "format hash mismatch: expected {}, got {}",
+            header.format_hash,
+            recomputed
+        );
+    }
+
+    for file in &files {
+        let _ = sanitized_relative_path(&file.path)?;
+
+        let digest = sha256_hex(&file.content);
+        if digest != file.sha256 {
+            bail!(
+                "content hash mismatch for {}: expected {}, got {}",
+                file.path,
+                file.sha256,
+                digest
+            );
+        }
+
+        if file.content.len() as u64 != file.size {
+            bail!(
+                "size mismatch for {}: metadata {}, decoded {}",
+                file.path,
+                file.size,
+                file.content.len()
+            );
+        }
+
+        u32::from_str_radix(&file.mode, 8)
+            .with_context(|| format!("invalid octal mode for {}: {}", file.path, file.mode))?;
+    }
+
+    Ok(())
+}
+
 fn collect_files(root: &Path) -> Result<Vec<SnapshotFile>> {
     let mut collected = Vec::new();
 
@@ -1156,7 +1200,7 @@ fn sanitized_relative_path(path: &str) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_snapshot, materialize_snapshot};
+    use super::{build_snapshot, materialize_snapshot, verify_snapshot};
     use std::fs;
     use std::io::Write;
 
@@ -1223,6 +1267,38 @@ mod tests {
 
         let result = materialize_snapshot(&snapshot, &output);
         assert!(result.is_err(), "materialize should reject traversal path");
+    }
+
+    #[test]
+    fn verify_accepts_valid_snapshot() {
+        let source = TempDir::new().expect("create source tempdir");
+        fs::write(source.path().join("ok.txt"), b"ok\n").expect("write source file");
+
+        let snapshot = source.path().join("snapshot.gcl");
+        build_snapshot(source.path(), &snapshot).expect("build snapshot");
+
+        verify_snapshot(&snapshot).expect("verify should pass");
+    }
+
+    #[test]
+    fn verify_rejects_bad_format_hash() {
+        let temp = TempDir::new().expect("create tempdir");
+        let snapshot = temp.path().join("invalid.gcl");
+
+        let digest = {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(b"x");
+            format!("{:x}", hasher.finalize())
+        };
+
+        let snapshot_text = format!(
+            ";; git-closure snapshot v0.1\n;; format-hash: deadbeef\n;; file-count: 1\n\n(\n  ((:path \"x.txt\" :sha256 \"{digest}\" :mode \"644\" :size 1) \"x\")\n)\n"
+        );
+        fs::write(&snapshot, snapshot_text).expect("write invalid snapshot");
+
+        let result = verify_snapshot(&snapshot);
+        assert!(result.is_err(), "verify should reject bad format hash");
     }
 }
 >>>>>>> 8191579 (feat: add deterministic build and materialize commands)
