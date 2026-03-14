@@ -1,0 +1,98 @@
+%% ── git-closure PDF Style ─────────────────────────────────────────────────────
+%% Light professional theme for DIN A4 — pandoc + lualatex
+%% ──────────────────────────────────────────────────────────────────────────────
+
+%% ── Packages ──────────────────────────────────────────────────────────────────
+\usepackage{xcolor}
+\usepackage{amssymb}        % \checkmark, \times
+\usepackage{framed}         % blockquote left-bar box
+\usepackage{fancyhdr}       % page headers / footers
+\usepackage{titlesec}       % section formatting
+\usepackage{microtype}      % optical margin alignment, improved justification
+\usepackage{enumitem}       % list spacing control
+\usepackage{setspace}       % line-spacing control
+\usepackage{booktabs}       % \toprule etc. (tables)
+
+%% ── Color Palette — light professional ────────────────────────────────────────
+%%    Grounded in neutral warm grays; blue limited to links only.
+\definecolor{heading}     {RGB}{33, 37, 41}     % charcoal — deliberate near-black
+\definecolor{subheading}  {RGB}{73, 80, 87}     % warm dark gray
+\definecolor{rulecolor}   {RGB}{206,212,218}    % silver — very light separator
+\definecolor{linkblue}    {RGB}{13, 98, 185}    % WCAG AA-compliant blue
+\definecolor{shadecolor}  {RGB}{248,249,250}    % near-white code block background
+\definecolor{quoteborder} {RGB}{134,142,150}    % mid-gray quote left border
+\definecolor{quotebg}     {RGB}{248,249,250}    % near-white quote background
+
+%% ── Global Typography ─────────────────────────────────────────────────────────
+\setlength{\parskip}{0.5em}
+\setlength{\parindent}{0pt}
+\setstretch{1.10}
+
+%% ── Page Headers / Footers ────────────────────────────────────────────────────
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\texttt{\textcolor{subheading}{git-closure}}}
+\fancyhead[R]{\small\textit{\textcolor{subheading}{Research \& Design}}}
+\fancyfoot[L]{\small\textcolor{rulecolor}{git-closure — Deterministic Source Code Snapshots}}
+\fancyfoot[R]{\small\textcolor{subheading}{\thepage}}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0.4pt}
+
+%% Color the header and footer rules
+\makeatletter
+\def\headrule{{\color{rulecolor}%
+  \hrule\@height\headrulewidth\@width\headwidth
+  \vskip-\headrulewidth}}
+\def\footrule{{\color{rulecolor}%
+  \vskip-\footruleskip\vskip-\footrulewidth
+  \hrule\@width\headwidth\@height\footrulewidth
+  \vskip\footruleskip}}
+\makeatother
+
+%% Mirror style on pages where LaTeX would otherwise use `plain'
+\fancypagestyle{plain}{%
+  \fancyhf{}%
+  \fancyhead[L]{\small\texttt{\textcolor{subheading}{git-closure}}}%
+  \fancyhead[R]{\small\textit{\textcolor{subheading}{Research \& Design}}}%
+  \fancyfoot[L]{\small\textcolor{rulecolor}{git-closure — Deterministic Source Code Snapshots}}%
+  \fancyfoot[R]{\small\textcolor{subheading}{\thepage}}%
+  \renewcommand{\headrulewidth}{0.4pt}%
+  \renewcommand{\footrulewidth}{0.4pt}%
+}
+
+%% ── Section Hierarchy ─────────────────────────────────────────────────────────
+\titleformat{\section}
+  {\Large\bfseries\color{heading}}
+  {}{0em}{}
+  [{\vspace{4pt}\color{rulecolor}\titlerule[0.5pt]}]
+\titlespacing*{\section}{0pt}{1.8em}{0.9em}
+
+\titleformat{\subsection}
+  {\large\bfseries\color{subheading}}
+  {}{0em}{}
+\titlespacing*{\subsection}{0pt}{1.3em}{0.4em}
+
+\titleformat{\subsubsection}
+  {\normalsize\bfseries\color{heading}}
+  {}{0em}{}
+\titlespacing*{\subsubsection}{0pt}{1.1em}{0.3em}
+
+\titleformat{\paragraph}[runin]
+  {\normalsize\bfseries\color{subheading}}
+  {}{0em}{}[.\ ]
+\titlespacing*{\paragraph}{0pt}{0.7em}{0.6em}
+
+%% ── Blockquote — left-bordered info box ──────────────────────────────────────
+%% Used for the status note at the top of the document.
+\renewenvironment{quote}
+  {\def\FrameCommand{{\color{quoteborder}\vrule width 3pt}\hspace{10pt}%
+     \colorbox{quotebg}}%
+   \MakeFramed{\advance\hsize-\width\FrameRestore}%
+   \vspace{4pt}\small\itshape\color{subheading}}
+  {\vspace{4pt}\endMakeFramed}
+
+%% ── Lists ─────────────────────────────────────────────────────────────────────
+\setlist{noitemsep, topsep=4pt, partopsep=0pt}
+\setlist[itemize,1]{leftmargin=1.5em}
+\setlist[itemize,2]{leftmargin=1.2em}
+\setlist[enumerate,1]{leftmargin=1.8em}
