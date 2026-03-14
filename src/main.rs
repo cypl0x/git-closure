@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 use std::path::PathBuf;
 use std::{io, process};
 
@@ -115,9 +114,6 @@ fn main() -> Result<()> {
 
     Ok(())
 }
-<<<<<<< HEAD
-||||||| parent of 8191579 (feat: add deterministic build and materialize commands)
-=======
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -167,9 +163,6 @@ fn main() -> Result<()> {
 
     Ok(())
 }
->>>>>>> 8191579 (feat: add deterministic build and materialize commands)
-||||||| parent of 8d0b8d4 (feat(cli): add verify quiet mode and shell completions)
-=======
 
 fn print_completion(shell: CompletionShell) {
     let mut cmd = Cli::command();
@@ -184,4 +177,3 @@ fn print_completion(shell: CompletionShell) {
     }
     process::exit(0);
 }
->>>>>>> 8d0b8d4 (feat(cli): add verify quiet mode and shell completions)
