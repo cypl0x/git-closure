@@ -4,7 +4,9 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use git_closure::{build_snapshot, materialize_snapshot, verify_snapshot};
+use git_closure::{
+    build_snapshot_with_options, materialize_snapshot, verify_snapshot, BuildOptions,
+};
 
 #[derive(Parser, Debug)]
 #[command(name = "git-closure")]
@@ -20,6 +22,10 @@ enum Commands {
         source: PathBuf,
         #[arg(short, long)]
         output: PathBuf,
+        #[arg(long)]
+        include_untracked: bool,
+        #[arg(long)]
+        require_clean: bool,
     },
     Materialize {
         snapshot: PathBuf,
@@ -35,8 +41,17 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Build { source, output } => {
-            build_snapshot(&source, &output)?;
+        Commands::Build {
+            source,
+            output,
+            include_untracked,
+            require_clean,
+        } => {
+            let options = BuildOptions {
+                include_untracked,
+                require_clean,
+            };
+            build_snapshot_with_options(&source, &output, &options)?;
         }
         Commands::Materialize { snapshot, output } => {
             materialize_snapshot(&snapshot, &output)?;

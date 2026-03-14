@@ -4,6 +4,7 @@ use std::fs;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
+use std::process::Command;
 
 use anyhow::{anyhow, bail, Context, Result};
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -21,7 +22,30 @@ struct SnapshotFile {
     content: Vec<u8>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BuildOptions {
+    pub include_untracked: bool,
+    pub require_clean: bool,
+}
+
+impl Default for BuildOptions {
+    fn default() -> Self {
+        Self {
+            include_untracked: false,
+            require_clean: false,
+        }
+    }
+}
+
 pub fn build_snapshot(source: &Path, output: &Path) -> Result<()> {
+    build_snapshot_with_options(source, output, &BuildOptions::default())
+}
+
+pub fn build_snapshot_with_options(
+    source: &Path,
+    output: &Path,
+    options: &BuildOptions,
+) -> Result<()> {
     let source = fs::canonicalize(source)
         .with_context(|| format!("failed to canonicalize source path: {}", source.display()))?;
 
@@ -29,7 +53,7 @@ pub fn build_snapshot(source: &Path, output: &Path) -> Result<()> {
         bail!("source is not a directory: {}", source.display());
     }
 
-    let mut files = collect_files(&source)?;
+    let mut files = collect_files(&source, options)?;
     files.sort_by(|a, b| a.path.cmp(&b.path));
 
     let format_hash = compute_format_hash(&files);
@@ -155,7 +179,126 @@ pub fn verify_snapshot(snapshot: &Path) -> Result<()> {
     Ok(())
 }
 
-fn collect_files(root: &Path) -> Result<Vec<SnapshotFile>> {
+fn collect_files(root: &Path, options: &BuildOptions) -> Result<Vec<SnapshotFile>> {
+    if let Some(repo_context) = GitRepoContext::discover(root)? {
+        return collect_files_from_git_repo(&repo_context, options);
+    }
+
+    collect_files_from_ignore_walk(root)
+}
+
+struct GitRepoContext {
+    workdir: PathBuf,
+    source_prefix: PathBuf,
+}
+
+impl GitRepoContext {
+    fn discover(source: &Path) -> Result<Option<Self>> {
+        let output = Command::new("git")
+            .args(["rev-parse", "--show-toplevel"])
+            .current_dir(source)
+            .output();
+
+        let output = match output {
+            Ok(output) if output.status.success() => output,
+            _ => return Ok(None),
+        };
+
+        let workdir = String::from_utf8(output.stdout)
+            .context("git returned non-UTF-8 repository root")?
+            .trim()
+            .to_string();
+        let workdir = PathBuf::from(workdir);
+
+        if !source.starts_with(&workdir) {
+            return Ok(None);
+        }
+
+        let source_prefix = source
+            .strip_prefix(&workdir)
+            .with_context(|| {
+                format!(
+                    "failed to determine source prefix under git workdir: {}",
+                    source.display()
+                )
+            })?
+            .to_path_buf();
+
+        Ok(Some(Self {
+            workdir,
+            source_prefix,
+        }))
+    }
+}
+
+fn collect_files_from_git_repo(
+    context: &GitRepoContext,
+    options: &BuildOptions,
+) -> Result<Vec<SnapshotFile>> {
+    if options.require_clean {
+        ensure_git_source_is_clean(context)?;
+    }
+
+    let mut repo_relative_paths = tracked_paths_from_index(context)?;
+    if options.include_untracked {
+        let untracked = untracked_paths_from_status(context)?;
+        repo_relative_paths.extend(untracked);
+    }
+
+    repo_relative_paths.sort();
+    repo_relative_paths.dedup();
+
+    let mut files = Vec::new();
+    for repo_relative in repo_relative_paths {
+        if !is_within_prefix(&repo_relative, &context.source_prefix) {
+            continue;
+        }
+
+        let absolute = context.workdir.join(&repo_relative);
+        let metadata = match fs::metadata(&absolute) {
+            Ok(metadata) => metadata,
+            Err(_) => continue,
+        };
+
+        if !metadata.is_file() {
+            continue;
+        }
+
+        let relative = absolute
+            .strip_prefix(&context.workdir.join(&context.source_prefix))
+            .with_context(|| {
+                format!(
+                    "failed to create source-relative path for git entry: {}",
+                    absolute.display()
+                )
+            })?;
+
+        let normalized = normalize_relative_path(relative)?;
+        let bytes = fs::read(&absolute)
+            .with_context(|| format!("failed to read file bytes: {}", absolute.display()))?;
+        let sha256 = sha256_hex(&bytes);
+        let mode = format!("{:o}", metadata.permissions().mode() & 0o777);
+        let size = bytes.len() as u64;
+        let encoding = if std::str::from_utf8(&bytes).is_ok() {
+            None
+        } else {
+            Some("base64".to_string())
+        };
+
+        files.push(SnapshotFile {
+            path: normalized,
+            sha256,
+            mode,
+            size,
+            encoding,
+            content: bytes,
+        });
+    }
+
+    Ok(files)
+}
+
+fn collect_files_from_ignore_walk(root: &Path) -> Result<Vec<SnapshotFile>> {
     let mut collected = Vec::new();
 
     let walker = WalkBuilder::new(root)
@@ -211,6 +354,91 @@ fn collect_files(root: &Path) -> Result<Vec<SnapshotFile>> {
     }
 
     Ok(collected)
+}
+
+fn tracked_paths_from_index(context: &GitRepoContext) -> Result<Vec<PathBuf>> {
+    git_ls_files(context, false)
+}
+
+fn untracked_paths_from_status(context: &GitRepoContext) -> Result<Vec<PathBuf>> {
+    git_ls_files(context, true)
+}
+
+fn ensure_git_source_is_clean(context: &GitRepoContext) -> Result<()> {
+    let output = Command::new("git")
+        .args(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
+        .current_dir(&context.workdir)
+        .output()
+        .context("failed to run git status for clean check")?;
+
+    if !output.status.success() {
+        bail!("git status failed during clean check");
+    }
+
+    let mut chunks = output.stdout.split(|b| *b == 0u8);
+    while let Some(entry) = chunks.next() {
+        if entry.is_empty() {
+            continue;
+        }
+
+        if entry.len() < 4 {
+            continue;
+        }
+
+        let path_bytes = &entry[3..];
+        let path = std::str::from_utf8(path_bytes)
+            .context("git status produced non-UTF-8 path")?
+            .trim();
+
+        let repo_relative = Path::new(path);
+        if is_within_prefix(repo_relative, &context.source_prefix) {
+            bail!(
+                "source tree is dirty at {} (use --include-untracked or clean working tree)",
+                path
+            );
+        }
+
+        if entry.starts_with(b"R") || entry.starts_with(b"C") {
+            let _ = chunks.next();
+        }
+    }
+
+    Ok(())
+}
+
+fn git_ls_files(context: &GitRepoContext, include_untracked: bool) -> Result<Vec<PathBuf>> {
+    let mut args = vec!["ls-files", "-z", "--cached"];
+    if include_untracked {
+        args.extend(["--others", "--exclude-standard"]);
+    }
+
+    let output = Command::new("git")
+        .args(&args)
+        .current_dir(&context.workdir)
+        .output()
+        .context("failed to run git ls-files")?;
+
+    if !output.status.success() {
+        bail!("git ls-files failed");
+    }
+
+    let mut paths = Vec::new();
+    for chunk in output.stdout.split(|b| *b == 0u8) {
+        if chunk.is_empty() {
+            continue;
+        }
+        let path = std::str::from_utf8(chunk).context("git ls-files produced non-UTF-8 path")?;
+        paths.push(PathBuf::from(path));
+    }
+
+    Ok(paths)
+}
+
+fn is_within_prefix(path: &Path, prefix: &Path) -> bool {
+    if prefix.as_os_str().is_empty() {
+        return true;
+    }
+    path.starts_with(prefix)
 }
 
 fn normalize_relative_path(path: &Path) -> Result<String> {
@@ -548,9 +776,14 @@ fn sanitized_relative_path(path: &str) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_snapshot, materialize_snapshot, verify_snapshot};
+    use super::{
+        build_snapshot, build_snapshot_with_options, materialize_snapshot, verify_snapshot,
+        BuildOptions,
+    };
     use std::fs;
     use std::io::Write;
+    use std::path::Path;
+    use std::process::Command;
 
     use tempfile::TempDir;
 
@@ -647,6 +880,99 @@ mod tests {
 
         let result = verify_snapshot(&snapshot);
         assert!(result.is_err(), "verify should reject bad format hash");
+    }
+
+    #[test]
+    fn git_mode_excludes_untracked_by_default() {
+        let repo = TempDir::new().expect("create temp repo");
+        init_git_repo(repo.path());
+
+        fs::write(repo.path().join("tracked.txt"), b"tracked\n").expect("write tracked");
+        run_git(repo.path(), &["add", "tracked.txt"]);
+        run_git(repo.path(), &["commit", "-m", "initial"]);
+
+        fs::write(repo.path().join("untracked.txt"), b"untracked\n").expect("write untracked");
+
+        let snapshot = repo.path().join("snapshot.gcl");
+        build_snapshot(repo.path(), &snapshot).expect("build snapshot");
+
+        let text = fs::read_to_string(snapshot).expect("read snapshot");
+        assert!(text.contains("\"tracked.txt\""));
+        assert!(!text.contains("\"untracked.txt\""));
+    }
+
+    #[test]
+    fn git_mode_include_untracked_respects_gitignore() {
+        let repo = TempDir::new().expect("create temp repo");
+        init_git_repo(repo.path());
+
+        fs::write(repo.path().join("tracked.txt"), b"tracked\n").expect("write tracked");
+        fs::write(repo.path().join(".gitignore"), b"ignored.txt\n").expect("write gitignore");
+        run_git(repo.path(), &["add", "tracked.txt", ".gitignore"]);
+        run_git(repo.path(), &["commit", "-m", "initial"]);
+
+        fs::write(repo.path().join("ignored.txt"), b"ignored\n").expect("write ignored");
+        fs::write(repo.path().join("new.txt"), b"new\n").expect("write new");
+
+        let snapshot = repo.path().join("snapshot.gcl");
+        build_snapshot_with_options(
+            repo.path(),
+            &snapshot,
+            &BuildOptions {
+                include_untracked: true,
+                require_clean: false,
+            },
+        )
+        .expect("build snapshot");
+
+        let text = fs::read_to_string(snapshot).expect("read snapshot");
+        assert!(text.contains("\"tracked.txt\""));
+        assert!(text.contains("\"new.txt\""));
+        assert!(!text.contains("\"ignored.txt\""));
+    }
+
+    #[test]
+    fn git_mode_require_clean_rejects_dirty_tree() {
+        let repo = TempDir::new().expect("create temp repo");
+        init_git_repo(repo.path());
+
+        fs::write(repo.path().join("tracked.txt"), b"tracked\n").expect("write tracked");
+        run_git(repo.path(), &["add", "tracked.txt"]);
+        run_git(repo.path(), &["commit", "-m", "initial"]);
+
+        fs::write(repo.path().join("tracked.txt"), b"changed\n").expect("modify tracked");
+
+        let snapshot = repo.path().join("snapshot.gcl");
+        let result = build_snapshot_with_options(
+            repo.path(),
+            &snapshot,
+            &BuildOptions {
+                include_untracked: false,
+                require_clean: true,
+            },
+        );
+        assert!(
+            result.is_err(),
+            "dirty tree should fail with --require-clean"
+        );
+    }
+
+    fn init_git_repo(path: &Path) {
+        run_git(path, &["init"]);
+        run_git(path, &["config", "user.name", "git-closure-test"]);
+        run_git(
+            path,
+            &["config", "user.email", "git-closure-test@example.com"],
+        );
+    }
+
+    fn run_git(path: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(path)
+            .status()
+            .expect("failed to run git command");
+        assert!(status.success(), "git command failed: git {:?}", args);
     }
 }
 ||||||| parent of 8191579 (feat: add deterministic build and materialize commands)

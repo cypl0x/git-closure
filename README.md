@@ -211,6 +211,19 @@ git-closure query dotfiles.gcl '**/*.nix'
 git-closure watch ~/dotfiles
 ```
 
+### File Selection Semantics (v0.1)
+
+`git-closure` intentionally mimics Nix local Git source behavior for deterministic snapshots:
+
+- In a Git repository, `build` includes only Git-tracked files by default.
+- Untracked files are excluded by default; include them explicitly with `--include-untracked`.
+- Ignored files stay excluded when `--include-untracked` is enabled.
+- `--require-clean` fails the build when the selected source tree has uncommitted changes.
+
+This follows the Nix flake `git+file` expectation that local files are fetched "as long as they have been added to the Git repository" (Nix manual):
+
+https://nix.dev/manual/nix/stable/command-ref/new-cli/nix3-flake#types
+
 ### Render / Export
 
 ```bash
