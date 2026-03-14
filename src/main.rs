@@ -1,8 +1,10 @@
 <<<<<<< HEAD
 use std::path::PathBuf;
+use std::{io, process};
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use clap_complete::{generate, shells};
 
 use git_closure::{
     build_snapshot_with_options, materialize_snapshot, verify_snapshot, BuildOptions,
@@ -18,7 +20,9 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    #[command(about = "Build a deterministic snapshot", visible_alias = "b")]
     Build {
+        #[arg(help = "Source directory to snapshot")]
         source: PathBuf,
         #[arg(short, long)]
         output: PathBuf,
@@ -27,14 +31,31 @@ enum Commands {
         #[arg(long)]
         require_clean: bool,
     },
+    #[command(about = "Materialize a snapshot to a directory", visible_alias = "m")]
     Materialize {
+        #[arg(help = "Snapshot file to materialize")]
         snapshot: PathBuf,
         #[arg(short, long)]
         output: PathBuf,
     },
+    #[command(about = "Verify snapshot integrity", visible_alias = "v")]
     Verify {
+        #[arg(help = "Snapshot file to verify")]
         snapshot: PathBuf,
+        #[arg(short, long, help = "Suppress success output")]
+        quiet: bool,
     },
+    #[command(about = "Generate shell completion scripts", visible_alias = "c")]
+    Completion {
+        #[arg(help = "Shell to generate completions for")]
+        shell: CompletionShell,
+    },
+}
+
+#[derive(Clone, Debug, ValueEnum)]
+enum CompletionShell {
+    Bash,
+    Zsh,
 }
 
 fn main() -> Result<()> {
@@ -56,13 +77,20 @@ fn main() -> Result<()> {
         Commands::Materialize { snapshot, output } => {
             materialize_snapshot(&snapshot, &output)?;
         }
-        Commands::Verify { snapshot } => {
-            verify_snapshot(&snapshot)?;
+        Commands::Verify { snapshot, quiet } => {
+            let report = verify_snapshot(&snapshot)?;
+            if !quiet {
+                println!("OK: verified {} file(s)", report.file_count);
+            }
+        }
+        Commands::Completion { shell } => {
+            print_completion(shell);
         }
     }
 
     Ok(())
 }
+<<<<<<< HEAD
 ||||||| parent of 8191579 (feat: add deterministic build and materialize commands)
 =======
 use std::path::PathBuf;
@@ -115,3 +143,20 @@ fn main() -> Result<()> {
     Ok(())
 }
 >>>>>>> 8191579 (feat: add deterministic build and materialize commands)
+||||||| parent of 8d0b8d4 (feat(cli): add verify quiet mode and shell completions)
+=======
+
+fn print_completion(shell: CompletionShell) {
+    let mut cmd = Cli::command();
+    let bin_name = cmd.get_name().to_string();
+    match shell {
+        CompletionShell::Bash => {
+            generate(shells::Bash, &mut cmd, bin_name, &mut io::stdout());
+        }
+        CompletionShell::Zsh => {
+            generate(shells::Zsh, &mut cmd, bin_name, &mut io::stdout());
+        }
+    }
+    process::exit(0);
+}
+>>>>>>> 8d0b8d4 (feat(cli): add verify quiet mode and shell completions)

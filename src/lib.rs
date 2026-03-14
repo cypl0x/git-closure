@@ -28,6 +28,11 @@ pub struct BuildOptions {
     pub require_clean: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifyReport {
+    pub file_count: usize,
+}
+
 impl Default for BuildOptions {
     fn default() -> Self {
         Self {
@@ -135,7 +140,7 @@ pub fn materialize_snapshot(snapshot: &Path, output: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn verify_snapshot(snapshot: &Path) -> Result<()> {
+pub fn verify_snapshot(snapshot: &Path) -> Result<VerifyReport> {
     let text = fs::read_to_string(snapshot)
         .with_context(|| format!("failed to read snapshot: {}", snapshot.display()))?;
 
@@ -176,7 +181,9 @@ pub fn verify_snapshot(snapshot: &Path) -> Result<()> {
             .with_context(|| format!("invalid octal mode for {}: {}", file.path, file.mode))?;
     }
 
-    Ok(())
+    Ok(VerifyReport {
+        file_count: files.len(),
+    })
 }
 
 fn collect_files(root: &Path, options: &BuildOptions) -> Result<Vec<SnapshotFile>> {
@@ -864,7 +871,8 @@ mod tests {
         let snapshot = source.path().join("snapshot.gcl");
         build_snapshot(source.path(), &snapshot).expect("build snapshot");
 
-        verify_snapshot(&snapshot).expect("verify should pass");
+        let report = verify_snapshot(&snapshot).expect("verify should pass");
+        assert_eq!(report.file_count, 1);
     }
 
     #[test]

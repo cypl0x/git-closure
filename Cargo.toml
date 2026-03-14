@@ -7,6 +7,7 @@ edition = "2021"
 anyhow = "1.0"
 base64 = "0.22"
 clap = { version = "4.5", features = ["derive"] }
+clap_complete = "4.5"
 ignore = "0.4"
 lexpr = "0.2"
 sha2 = "0.10"
