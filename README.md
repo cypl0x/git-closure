@@ -339,6 +339,101 @@ The ideal is that a Rust CLI, an Emacs Lisp implementation, a Python implementat
 - exact text/byte and escaping rules
 - a hard separation between normative format behaviour and implementation convenience
 
+### Nix Ecosystem Integration
+
+Two Nix primitives are directly relevant to git-closure: `.drv` derivation files and `.nar` archives.
+
+#### What `.drv` files actually are
+
+A Nix derivation is a build recipe stored as a text file in the Nix store. Its actual on-disk format looks like this:
+
+```
+Derive(
+  [("out","/nix/store/yyy-hello-2.12.1","","")],
+  [("/nix/store/xxx-bash-5.2.drv",["out"]),
+   ("/nix/store/abc-gcc-12.drv",["out"]),
+   ("/nix/store/def-glibc-2.37.drv",["out"])],
+  ["/nix/store/ghi-hello-2.12.1.tar.gz"],
+  "x86_64-linux",
+  "/nix/store/mno-bash-5.2/bin/bash",
+  ["-c","tar xf $src && cd hello-* && ./configure --prefix=$out && make install"],
+  [("name","hello-2.12.1"),
+   ("out","/nix/store/yyy-hello-2.12.1"),
+   ("src","/nix/store/ghi-hello-2.12.1.tar.gz"),
+   ("system","x86_64-linux")]
+)
+```
+
+Every reference is an absolute `/nix/store/hash-name` path. Nothing is ever inlined. The source tarball itself is a separate store path — a fixed-output derivation whose hash was fixed at fetch time. Without access to those store paths (or a binary cache that has them), the `.drv` is not actionable. A `.drv` is a recipe that assumes its entire dependency graph is already present elsewhere.
+
+**Consequence for git-closure:** `.drv` files cannot replace or contain source snapshots. They are build instructions, not source representations. `materialize` must remain a first-class git-closure operation independent of Nix.
+
+#### What NAR files actually are
+
+NAR (Nix ARchive) is a **formally specified, deterministic, canonical serialization of a file tree**. `nix-store --dump` produces a NAR; `nix-store --restore` unpacks it. Nix computes the SHA-256 of a store path's NAR to derive its content address.
+
+NAR is directly relevant to git-closure in two ways:
+
+1. **Canonicalization reference** — NAR has already solved the hard problem of deterministic file tree serialization: lexicographic path ordering, precise handling of regular files, symlinks, and directories, no host-specific data, exact byte semantics. git-closure should study the [NAR format specification](https://edolstra.github.io/pubs/phd-thesis.pdf) closely when writing its own canonicalization rules rather than reinventing them from scratch.
+
+2. **Export target** — `git-closure render snapshot.gcl --format nar` is a natural and useful operation for Nix users. A git-closure snapshot converted to NAR can be imported directly into the Nix store as a fixed-output source path, bridging the human-readable snapshot world with native Nix workflows.
+
+NAR is binary, not human-readable — so it cannot serve as the `.gcl` core format. But it is the right model for the canonical layer that sits beneath the human-readable representation.
+
+#### NAR as a universal format converter?
+
+The Nix derivation system *can* produce Docker/OCI images (`pkgs.dockerTools.buildImage`), ISO images (`nixos-generators`), VM disk images, and many other output formats. But these are build outputs from Nix expressions evaluated by the Nix daemon — they require Nix to be installed, network access to dependency caches, and bespoke Nix code.
+
+NAR → JSON / YAML / Markdown / Docker is not something standard Nix tooling provides. NAR is a file-tree format; structured data conversion is not in its scope. The Nix ecosystem's output variety comes from the derivation system, not from NAR. Treating NAR as a format conversion hub would require writing custom derivations for each target, eliminating the "shortcut" entirely.
+
+**Practical conclusion:** NAR is valuable as a canonicalization reference and as one export target. It is not a universal bridge to the broader Nix ecosystem's output variety.
+
+#### The Lightweight Pointer Variant (`.gcl.ref`)
+
+A compelling design variant emerges from the `.drv` analogy: instead of embedding file content, store **content-addressed references** to files hosted on an existing provider.
+
+GitHub raw URLs pinned to a specific commit SHA are already effectively content-addressed — Git commits are immutable, so the URL is deterministic and the content it points to will never change:
+
+```
+https://raw.githubusercontent.com/owner/repo/9dcb002.../hosts/thinkpad/default.nix
+```
+
+A lightweight reference file might look like:
+
+```
+;; git-closure reference snapshot v0.1
+;; source:  gh:owner/dotfiles@9dcb002a3f7e2d1c8e5f6a9b0d1e2f3c4a5b6d7
+;; format-hash: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+
+(
+  (:file    "hosts/thinkpad/default.nix"
+   :sha256  "b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2"
+   :size    5678
+   :ref     "https://raw.githubusercontent.com/owner/dotfiles/9dcb002.../hosts/thinkpad/default.nix")
+
+  (:file    "flake.nix"
+   :sha256  "c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3"
+   :size    1200
+   :ref     "https://raw.githubusercontent.com/owner/dotfiles/9dcb002.../flake.nix")
+)
+```
+
+The `:sha256` field makes each reference independently verifiable upon fetch: download the file, hash it, compare. The file is tiny — a few kilobytes for a repository with hundreds of files.
+
+This is structurally identical to what `git-lfs` pointer files do: the pointer is stored in Git, the content is stored elsewhere and fetched on demand.
+
+| Property | Full `.gcl` (content-embedded) | Reference `.gcl.ref` (pointer-based) |
+|---|:---:|:---:|
+| Self-contained | ✓ | ✗ |
+| Archival without network | ✓ | ✗ |
+| File size | large | tiny |
+| Works offline | ✓ | ✗ |
+| AI upload / email | ✓ | ✓ (with fetch step) |
+| Verifiable | ✓ | ✓ (after fetch) |
+| Requires provider access | ✗ | ✓ |
+
+When IPFS content identifiers (CIDs) become practical as references, they eliminate the dependency on any specific provider entirely — the CID *is* the hash, and any IPFS node can serve the content. This is the ideal long-term target for the pointer format.
+
 ---
 
 ## Implementation Notes
@@ -432,6 +527,12 @@ tests/
 9. **Literate programming scope** — is source block evaluation (à la `org-babel`) in scope for v1, or deferred?
 
 10. **Pandoc delegation boundary** — what should be delegated to Pandoc or document-oriented exporters, and what must remain first-class in `git-closure` itself?
+
+11. **Nix integration depth** — Three distinct levels of Nix integration are possible, each with different costs: (a) NAR as an export target only; (b) NAR canonicalization rules borrowed for the core spec; (c) a first-class reference variant (`.gcl.ref`) that uses content-addressed provider URLs and optionally IPFS CIDs. Which levels belong in v1, and which are post-v1?
+
+12. **Lightweight pointer format** — The `.gcl.ref` reference variant (see Design Considerations above) is architecturally clean but not self-contained. Should it be a first-class format variant, a separate tool, or explicitly out of scope until IPFS references become practical?
+
+13. **Data fluidity and export surface** — The hypothesis is that broader import/export support drives adoption. Candidate targets span a wide range: `fuse`, `nfs`, `webdav`, `git-lfs`, `git-annex`, `ipfs`, `oci`, `docker`, `kubernetes`, `s3`, `syncthing`, `iso`, `squashfs`. These divide into two fundamentally different categories: *document formats* (Markdown, Org, HTML, PDF, JSON) delegatable to Pandoc or Nix derivations, and *infrastructure formats* (OCI, ISO, FUSE, NFS) requiring bespoke integration work. Should these be treated as one roadmap or two separate surface areas?
 
 ---
 
