@@ -493,19 +493,24 @@ fn serialize_snapshot(files: &[SnapshotFile], format_hash: &str) -> String {
     output.push_str("(\n");
 
     for file in files {
-        output.push_str("  ((:path ");
+        output.push_str("  (\n");
+        output.push_str("    (:path ");
         output.push_str(&quote_string(&file.path));
-        output.push_str(" :sha256 ");
+        output.push_str("\n");
+        output.push_str("     :sha256 ");
         output.push_str(&quote_string(&file.sha256));
-        output.push_str(" :mode ");
+        output.push_str("\n");
+        output.push_str("     :mode ");
         output.push_str(&quote_string(&file.mode));
-        output.push_str(" :size ");
+        output.push_str("\n");
+        output.push_str("     :size ");
         output.push_str(&file.size.to_string());
         if let Some(encoding) = &file.encoding {
-            output.push_str(" :encoding ");
+            output.push_str("\n");
+            output.push_str("     :encoding ");
             output.push_str(&quote_string(encoding));
         }
-        output.push_str(") ");
+        output.push_str(")\n");
 
         let content_string = if file.encoding.as_deref() == Some("base64") {
             BASE64_STANDARD.encode(&file.content)
@@ -514,7 +519,8 @@ fn serialize_snapshot(files: &[SnapshotFile], format_hash: &str) -> String {
         };
 
         output.push_str(&quote_string(&content_string));
-        output.push_str(")\n");
+        output.push_str("\n");
+        output.push_str("  )\n");
     }
 
     output.push_str(")\n");
@@ -726,7 +732,7 @@ fn quote_string(input: &str) -> String {
         match ch {
             '\\' => output.push_str("\\\\"),
             '"' => output.push_str("\\\""),
-            '\n' => output.push_str("\\n"),
+            '\n' => output.push('\n'),
             '\r' => output.push_str("\\r"),
             '\t' => output.push_str("\\t"),
             c if c.is_control() => output.push_str(&format!("\\x{:02x};", c as u32)),
