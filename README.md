@@ -129,6 +129,17 @@ git-closure list dotfiles.gcl
 git-closure export dotfiles.gcl --format tar --output dotfiles.tar
 git-closure export dotfiles.gcl --format zip --output dotfiles.zip
 git-closure export dotfiles.gcl --format json --output dotfiles.json
+git-closure export dotfiles.gcl --format json --output dotfiles.jsonc
+git-closure export dotfiles.gcl --format json --output dotfiles.toml
+git-closure export dotfiles.gcl --format json --output dotfiles.yaml
+git-closure export dotfiles.gcl --format nix-drv --output dotfiles.drv
+git-closure export dotfiles.gcl --format nix-nar --output dotfiles.nar
+git-closure export dotfiles.gcl --format web-server
+git-closure export dotfiles.gcl --format ftp-server
+git-closure export dotfiles.gcl --format sftp-server
+git-closure export dotfiles.gcl --format smb-server
+git-closure export dotfiles.gcl --format fuse-server
+git-closure export dotfiles.gcl --format fuse-cryptomator-server
 ```
 
 ## Advanced Features
