@@ -626,7 +626,8 @@ fn serialize_snapshot(files: &[SnapshotFile], snapshot_hash: &str) -> String {
         output.push_str(&quote_string(&file.path));
         if let Some(target) = &file.symlink_target {
             output.push('\n');
-            output.push_str("     :type \"symlink\"");
+            output.push_str("     :type ");
+            output.push_str(&quote_string("symlink"));
             output.push('\n');
             output.push_str("     :target ");
             output.push_str(&quote_string(target));
@@ -1734,6 +1735,37 @@ mod tests {
         let sample = "line1\nline2\u{0000}\u{fffd}\u{1f642}\\\"";
         let expected = lexpr::to_string(&lexpr::Value::string(sample)).expect("print with lexpr");
         assert_eq!(super::quote_string(sample), expected);
+    }
+
+    #[test]
+    fn serialize_symlink_type_field_uses_quote_string() {
+        assert_eq!(super::quote_string("symlink"), "\"symlink\"");
+
+        let lib_source = include_str!("lib.rs");
+        assert!(
+            !lib_source.contains("output.push_str(\"     :type \\\"symlink\\\"\");"),
+            "serialize_snapshot should route symlink type through quote_string"
+        );
+
+        let source = TempDir::new().expect("create tempdir");
+        let target_path = source.path().join("target.txt");
+        fs::write(&target_path, b"payload\n").expect("write target");
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("target.txt", source.path().join("link"))
+            .expect("create symlink");
+
+        let snapshot = source.path().join("snap.gcl");
+        build_snapshot(source.path(), &snapshot).expect("build snapshot");
+
+        let text = fs::read_to_string(&snapshot).expect("read snapshot");
+        assert!(
+            text.contains(":type \"symlink\""),
+            "serialized snapshot must contain :type with quoted string, got:\n{}",
+            text
+        );
+
+        verify_snapshot(&snapshot).expect("verify must pass after serialization fix");
     }
 
     struct MockProvider {
