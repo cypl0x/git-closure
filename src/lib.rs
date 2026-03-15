@@ -876,21 +876,8 @@ fn parse_files_value(value: &lexpr::Value) -> Result<Vec<SnapshotFile>> {
 }
 
 fn quote_string(input: &str) -> String {
-    let mut output = String::with_capacity(input.len() + 2);
-    output.push('"');
-    for ch in input.chars() {
-        match ch {
-            '\\' => output.push_str("\\\\"),
-            '"' => output.push_str("\\\""),
-            '\n' => output.push('\n'),
-            '\r' => output.push_str("\\r"),
-            '\t' => output.push_str("\\t"),
-            c if c.is_control() => output.push_str(&format!("\\x{:02x};", c as u32)),
-            c => output.push(c),
-        }
-    }
-    output.push('"');
-    output
+    lexpr::to_string(&lexpr::Value::string(input))
+        .expect("lexpr string serialization should not fail")
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -1367,6 +1354,75 @@ mod tests {
         hasher.update(target.as_bytes());
         hasher.update([0x00]);
         format!("{:x}", hasher.finalize())
+    }
+
+    #[test]
+    fn serialization_round_trips_all_byte_values() {
+        let source = TempDir::new().expect("create source tempdir");
+        let restored = TempDir::new().expect("create restored tempdir");
+
+        let payload: Vec<u8> = (0u8..=255u8).collect();
+        fs::write(source.path().join("all-bytes.bin"), &payload).expect("write all-bytes file");
+
+        let snapshot = source.path().join("snapshot.gcl");
+        build_snapshot(source.path(), &snapshot).expect("build snapshot");
+        verify_snapshot(&snapshot).expect("verify snapshot");
+        materialize_snapshot(&snapshot, restored.path()).expect("materialize snapshot");
+
+        let restored_payload =
+            fs::read(restored.path().join("all-bytes.bin")).expect("read restored all-bytes file");
+        assert_eq!(restored_payload, payload);
+    }
+
+    #[test]
+    fn serialization_round_trips_unicode_edge_cases() {
+        let source = TempDir::new().expect("create source tempdir");
+        let restored = TempDir::new().expect("create restored tempdir");
+
+        let content = ["", "\u{feff}", "\u{0000}", "\u{fffd}", "\u{1f642}"].join("|");
+        let expected = content.as_bytes().to_vec();
+        fs::write(source.path().join("unicode.txt"), expected.clone()).expect("write unicode file");
+
+        let snapshot = source.path().join("snapshot.gcl");
+        build_snapshot(source.path(), &snapshot).expect("build snapshot");
+        verify_snapshot(&snapshot).expect("verify snapshot");
+        materialize_snapshot(&snapshot, restored.path()).expect("materialize snapshot");
+
+        let restored_bytes =
+            fs::read(restored.path().join("unicode.txt")).expect("read restored unicode file");
+        assert_eq!(restored_bytes, expected);
+    }
+
+    #[test]
+    fn serialization_round_trips_special_character_paths() {
+        let source = TempDir::new().expect("create source tempdir");
+        let restored = TempDir::new().expect("create restored tempdir");
+
+        let special_dir = source.path().join("dir with spaces");
+        fs::create_dir_all(&special_dir).expect("create special directory");
+        let special_path = special_dir.join("file \"quoted\" [x].txt");
+        let expected = b"special path content\n";
+        fs::write(&special_path, expected).expect("write special path file");
+
+        let snapshot = source.path().join("snapshot.gcl");
+        build_snapshot(source.path(), &snapshot).expect("build snapshot");
+        verify_snapshot(&snapshot).expect("verify snapshot");
+        materialize_snapshot(&snapshot, restored.path()).expect("materialize snapshot");
+
+        let restored_bytes = fs::read(
+            restored
+                .path()
+                .join("dir with spaces/file \"quoted\" [x].txt"),
+        )
+        .expect("read restored special path file");
+        assert_eq!(restored_bytes, expected);
+    }
+
+    #[test]
+    fn quote_string_matches_lexpr_printer() {
+        let sample = "line1\nline2\u{0000}\u{fffd}\u{1f642}\\\"";
+        let expected = lexpr::to_string(&lexpr::Value::string(sample)).expect("print with lexpr");
+        assert_eq!(super::quote_string(sample), expected);
     }
 
     struct MockProvider {
