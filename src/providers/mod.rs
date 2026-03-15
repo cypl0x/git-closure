@@ -107,6 +107,7 @@ impl Provider for GitCloneProvider {
                 &parsed.url,
                 checkout_str,
             ],
+            None,
         )?;
 
         if !status.success() {
@@ -128,6 +129,7 @@ impl Provider for GitCloneProvider {
                     "origin",
                     &reference,
                 ],
+                None,
             )?;
 
             if !fetch_status.success() {
@@ -140,6 +142,7 @@ impl Provider for GitCloneProvider {
             let checkout_status = run_command_status(
                 "git",
                 &["-C", checkout_str, "checkout", "--detach", "FETCH_HEAD"],
+                None,
             )?;
 
             if !checkout_status.success() {
@@ -159,7 +162,7 @@ pub struct NixProvider;
 impl Provider for NixProvider {
     fn fetch(&self, source: &str) -> Result<FetchedSource> {
         let normalized = source.strip_prefix("nix:").unwrap_or(source);
-        let output = run_command_output("nix", &["flake", "metadata", normalized, "--json"])?;
+        let output = run_command_output("nix", &["flake", "metadata", normalized, "--json"], None)?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -258,17 +261,31 @@ fn parse_nix_metadata_path(output: &[u8]) -> Result<PathBuf> {
     Ok(PathBuf::from(metadata.path))
 }
 
-fn run_command_status(command: &'static str, args: &[&str]) -> Result<ExitStatus> {
-    Command::new(command)
-        .args(args)
-        .status()
+pub(crate) fn run_command_status(
+    command: &'static str,
+    args: &[&str],
+    current_dir: Option<&Path>,
+) -> Result<ExitStatus> {
+    let mut cmd = Command::new(command);
+    cmd.args(args);
+    if let Some(dir) = current_dir {
+        cmd.current_dir(dir);
+    }
+    cmd.status()
         .map_err(|source| GitClosureError::CommandSpawnFailed { command, source })
 }
 
-fn run_command_output(command: &'static str, args: &[&str]) -> Result<std::process::Output> {
-    Command::new(command)
-        .args(args)
-        .output()
+pub(crate) fn run_command_output(
+    command: &'static str,
+    args: &[&str],
+    current_dir: Option<&Path>,
+) -> Result<std::process::Output> {
+    let mut cmd = Command::new(command);
+    cmd.args(args);
+    if let Some(dir) = current_dir {
+        cmd.current_dir(dir);
+    }
+    cmd.output()
         .map_err(|source| GitClosureError::CommandSpawnFailed { command, source })
 }
 
@@ -310,7 +327,7 @@ mod tests {
 
     #[test]
     fn missing_binary_maps_to_command_spawn_failed() {
-        let err = run_command_status("__nonexistent_binary_for_testing__", &[])
+        let err = run_command_status("__nonexistent_binary_for_testing__", &[], None)
             .expect_err("missing binary should produce spawn error");
 
         match err {
@@ -320,6 +337,23 @@ mod tests {
             }
             other => panic!("expected CommandSpawnFailed, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn missing_binary_with_current_dir_maps_to_command_spawn_failed() {
+        let dir = std::env::temp_dir();
+        let err = run_command_status("__nonexistent_binary_for_testing__", &[], Some(&dir))
+            .expect_err("missing binary should fail");
+        assert!(
+            matches!(
+                err,
+                GitClosureError::CommandSpawnFailed {
+                    command: "__nonexistent_binary_for_testing__",
+                    ..
+                }
+            ),
+            "expected CommandSpawnFailed, got {err:?}"
+        );
     }
 
     #[test]

@@ -4,7 +4,6 @@ use std::io::{self, Write};
 use std::os::unix::fs::symlink;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
 
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
@@ -15,7 +14,7 @@ pub mod error;
 pub mod providers;
 
 pub use error::GitClosureError;
-use providers::{fetch_source, Provider, ProviderKind};
+use providers::{fetch_source, run_command_output, Provider, ProviderKind};
 
 type Result<T> = std::result::Result<T, GitClosureError>;
 
@@ -234,15 +233,10 @@ struct GitRepoContext {
 
 impl GitRepoContext {
     fn discover(source: &Path) -> Result<Option<Self>> {
-        let output = Command::new("git")
-            .args(["rev-parse", "--show-toplevel"])
-            .current_dir(source)
-            .output();
-
-        let output = match output {
-            Ok(output) if output.status.success() => output,
-            _ => return Ok(None),
-        };
+        let output = run_command_output("git", &["rev-parse", "--show-toplevel"], Some(source))?;
+        if !output.status.success() {
+            return Ok(None);
+        }
 
         let workdir = String::from_utf8(output.stdout)
             .map_err(|err| {
@@ -456,10 +450,11 @@ fn untracked_paths_from_status(context: &GitRepoContext) -> Result<Vec<PathBuf>>
 }
 
 fn ensure_git_source_is_clean(context: &GitRepoContext) -> Result<()> {
-    let output = Command::new("git")
-        .args(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
-        .current_dir(&context.workdir)
-        .output()?;
+    let output = run_command_output(
+        "git",
+        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        Some(&context.workdir),
+    )?;
 
     if !output.status.success() {
         return Err(GitClosureError::Parse(
@@ -526,10 +521,7 @@ fn git_ls_files(context: &GitRepoContext, include_untracked: bool) -> Result<Vec
         args.extend(["--others", "--exclude-standard"]);
     }
 
-    let output = Command::new("git")
-        .args(&args)
-        .current_dir(&context.workdir)
-        .output()?;
+    let output = run_command_output("git", &args, Some(&context.workdir))?;
 
     if !output.status.success() {
         return Err(GitClosureError::Parse("git ls-files failed".to_string()));
