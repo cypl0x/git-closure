@@ -6,15 +6,19 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, Context};
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use ignore::WalkBuilder;
 use sha2::{Digest, Sha256};
 
+pub mod error;
 pub mod providers;
 
+pub use error::GitClosureError;
 use providers::{fetch_source, Provider, ProviderKind};
+
+type Result<T> = std::result::Result<T, GitClosureError>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SnapshotFile {
@@ -71,7 +75,10 @@ pub fn build_snapshot_with_options(
         .with_context(|| format!("failed to canonicalize source path: {}", source.display()))?;
 
     if !source.is_dir() {
-        bail!("source is not a directory: {}", source.display());
+        return Err(GitClosureError::Parse(format!(
+            "source is not a directory: {}",
+            source.display()
+        )));
     }
 
     let mut files = collect_files(&source, options)?;
@@ -102,11 +109,10 @@ pub fn materialize_snapshot(snapshot: &Path, output: &Path) -> Result<()> {
 
     let recomputed = compute_snapshot_hash(&files);
     if recomputed != header.snapshot_hash {
-        bail!(
-            "snapshot hash mismatch: expected {}, got {}",
-            header.snapshot_hash,
-            recomputed
-        );
+        return Err(GitClosureError::HashMismatch {
+            expected: header.snapshot_hash,
+            actual: recomputed,
+        });
     }
 
     fs::create_dir_all(output)
@@ -124,7 +130,7 @@ pub fn materialize_snapshot(snapshot: &Path, output: &Path) -> Result<()> {
         let destination = output_abs.join(relative);
 
         if !destination.starts_with(&output_abs) {
-            bail!("refusing to write outside output directory: {}", file.path);
+            return Err(GitClosureError::UnsafePath(file.path));
         }
 
         if let Some(parent) = destination.parent() {
@@ -136,11 +142,10 @@ pub fn materialize_snapshot(snapshot: &Path, output: &Path) -> Result<()> {
         if let Some(target) = &file.symlink_target {
             let target_path = Path::new(target);
             if target_path.is_absolute() && !target_path.starts_with(&output_abs) {
-                bail!(
+                return Err(GitClosureError::UnsafePath(format!(
                     "absolute symlink target escapes output directory for {}: {}",
-                    file.path,
-                    target
-                );
+                    file.path, target
+                )));
             }
             symlink(target_path, &destination).with_context(|| {
                 format!(
@@ -154,12 +159,11 @@ pub fn materialize_snapshot(snapshot: &Path, output: &Path) -> Result<()> {
 
         let digest = sha256_hex(&file.content);
         if digest != file.sha256 {
-            bail!(
-                "content hash mismatch for {}: expected {}, got {}",
-                file.path,
-                file.sha256,
-                digest
-            );
+            return Err(GitClosureError::ContentHashMismatch {
+                path: file.path,
+                expected: file.sha256,
+                actual: digest,
+            });
         }
 
         fs::write(&destination, &file.content)
@@ -183,11 +187,10 @@ pub fn verify_snapshot(snapshot: &Path) -> Result<VerifyReport> {
 
     let recomputed = compute_snapshot_hash(&files);
     if recomputed != header.snapshot_hash {
-        bail!(
-            "snapshot hash mismatch: expected {}, got {}",
-            header.snapshot_hash,
-            recomputed
-        );
+        return Err(GitClosureError::HashMismatch {
+            expected: header.snapshot_hash,
+            actual: recomputed,
+        });
     }
 
     for file in &files {
@@ -199,21 +202,19 @@ pub fn verify_snapshot(snapshot: &Path) -> Result<VerifyReport> {
 
         let digest = sha256_hex(&file.content);
         if digest != file.sha256 {
-            bail!(
-                "content hash mismatch for {}: expected {}, got {}",
-                file.path,
-                file.sha256,
-                digest
-            );
+            return Err(GitClosureError::ContentHashMismatch {
+                path: file.path.clone(),
+                expected: file.sha256.clone(),
+                actual: digest,
+            });
         }
 
         if file.content.len() as u64 != file.size {
-            bail!(
-                "size mismatch for {}: metadata {}, decoded {}",
-                file.path,
-                file.size,
-                file.content.len()
-            );
+            return Err(GitClosureError::SizeMismatch {
+                path: file.path.clone(),
+                expected: file.size,
+                actual: file.content.len() as u64,
+            });
         }
 
         u32::from_str_radix(&file.mode, 8)
@@ -461,7 +462,9 @@ fn ensure_git_source_is_clean(context: &GitRepoContext) -> Result<()> {
         .context("failed to run git status for clean check")?;
 
     if !output.status.success() {
-        bail!("git status failed during clean check");
+        return Err(GitClosureError::Parse(
+            "git status failed during clean check".to_string(),
+        ));
     }
 
     let mut chunks = output.stdout.split(|b| *b == 0u8);
@@ -481,10 +484,10 @@ fn ensure_git_source_is_clean(context: &GitRepoContext) -> Result<()> {
 
         let repo_relative = Path::new(path);
         if is_within_prefix(repo_relative, &context.source_prefix) {
-            bail!(
+            return Err(GitClosureError::Parse(format!(
                 "source tree is dirty at {} (use --include-untracked or clean working tree)",
                 path
-            );
+            )));
         }
 
         if entry.starts_with(b"R") || entry.starts_with(b"C") {
@@ -508,7 +511,7 @@ fn git_ls_files(context: &GitRepoContext, include_untracked: bool) -> Result<Vec
         .context("failed to run git ls-files")?;
 
     if !output.status.success() {
-        bail!("git ls-files failed");
+        return Err(GitClosureError::Parse("git ls-files failed".to_string()));
     }
 
     let mut paths = Vec::new();
@@ -532,7 +535,7 @@ fn is_within_prefix(path: &Path, prefix: &Path) -> bool {
 
 fn normalize_relative_path(path: &Path) -> Result<String> {
     if path.is_absolute() {
-        bail!("absolute paths are forbidden: {}", path.display());
+        return Err(GitClosureError::UnsafePath(path.display().to_string()));
     }
 
     let mut components = Vec::new();
@@ -540,7 +543,7 @@ fn normalize_relative_path(path: &Path) -> Result<String> {
         match component {
             Component::Normal(part) => {
                 if part == OsStr::new(".") || part == OsStr::new("..") {
-                    bail!("invalid path component in: {}", path.display());
+                    return Err(GitClosureError::UnsafePath(path.display().to_string()));
                 }
                 components.push(
                     part.to_str()
@@ -552,13 +555,15 @@ fn normalize_relative_path(path: &Path) -> Result<String> {
             | Component::ParentDir
             | Component::RootDir
             | Component::Prefix(_) => {
-                bail!("non-normalized path component in: {}", path.display())
+                return Err(GitClosureError::UnsafePath(path.display().to_string()));
             }
         }
     }
 
     if components.is_empty() {
-        bail!("empty relative path");
+        return Err(GitClosureError::UnsafePath(
+            "empty relative path".to_string(),
+        ));
     }
 
     Ok(components.join("/"))
@@ -653,11 +658,11 @@ fn parse_snapshot(input: &str) -> Result<(SnapshotHeader, Vec<SnapshotFile>)> {
     let files = parse_files_value(&parsed)?;
 
     if files.len() != header.file_count {
-        bail!(
+        return Err(GitClosureError::Parse(format!(
             "file count mismatch: header says {}, parsed {}",
             header.file_count,
             files.len()
-        );
+        )));
     }
 
     Ok((header, files))
@@ -673,7 +678,9 @@ fn split_header_body(input: &str) -> Result<(SnapshotHeader, &str)> {
         let line_len = line.len();
         if line.starts_with(";;") {
             if line.strip_prefix(";; format-hash:").is_some() {
-                bail!("legacy format-hash header found; re-snapshot with current tool");
+                return Err(GitClosureError::LegacyHeader(
+                    "legacy format-hash header found; re-snapshot with current tool".to_string(),
+                ));
             }
             if let Some(value) = line.strip_prefix(";; snapshot-hash:") {
                 snapshot_hash = Some(value.trim().to_string());
@@ -699,9 +706,9 @@ fn split_header_body(input: &str) -> Result<(SnapshotHeader, &str)> {
         break;
     }
 
-    let snapshot_hash = snapshot_hash.ok_or_else(|| anyhow!("missing snapshot-hash header"))?;
-    let file_count = file_count.ok_or_else(|| anyhow!("missing file-count header"))?;
-    let body_start = body_start.ok_or_else(|| anyhow!("missing S-expression body"))?;
+    let snapshot_hash = snapshot_hash.ok_or(GitClosureError::MissingHeader("snapshot-hash"))?;
+    let file_count = file_count.ok_or(GitClosureError::MissingHeader("file-count"))?;
+    let body_start = body_start.ok_or(GitClosureError::MissingHeader("S-expression body"))?;
 
     let body = &input[body_start..];
 
@@ -726,7 +733,9 @@ fn parse_files_value(value: &lexpr::Value) -> Result<Vec<SnapshotFile>> {
             .to_ref_vec()
             .ok_or_else(|| anyhow!("each entry must be a 2-item list"))?;
         if pair.len() != 2 {
-            bail!("each entry must contain plist and content");
+            return Err(GitClosureError::Parse(
+                "each entry must contain plist and content".to_string(),
+            ));
         }
 
         let plist = pair[0]
@@ -746,7 +755,9 @@ fn parse_files_value(value: &lexpr::Value) -> Result<Vec<SnapshotFile>> {
         let mut target = None;
 
         if plist.len() % 2 != 0 {
-            bail!("plist key/value pairs are malformed");
+            return Err(GitClosureError::Parse(
+                "plist key/value pairs are malformed".to_string(),
+            ));
         }
 
         let mut idx = 0usize;
@@ -758,7 +769,9 @@ fn parse_files_value(value: &lexpr::Value) -> Result<Vec<SnapshotFile>> {
                     .strip_prefix(':')
                     .ok_or_else(|| anyhow!("plist symbol keys must start with ':'"))?
             } else {
-                bail!("plist keys must be keywords or :symbol values");
+                return Err(GitClosureError::Parse(
+                    "plist keys must be keywords or :symbol values".to_string(),
+                ));
             };
             let value = &plist[idx + 1];
 
@@ -818,7 +831,12 @@ fn parse_files_value(value: &lexpr::Value) -> Result<Vec<SnapshotFile>> {
                             .to_string(),
                     );
                 }
-                other => bail!("unknown metadata key: :{}", other),
+                other => {
+                    return Err(GitClosureError::Parse(format!(
+                        "unknown metadata key: :{}",
+                        other
+                    )));
+                }
             }
 
             idx += 2;
@@ -847,17 +865,21 @@ fn parse_files_value(value: &lexpr::Value) -> Result<Vec<SnapshotFile>> {
             Some("base64") => BASE64_STANDARD
                 .decode(content_field)
                 .with_context(|| format!("invalid base64 content for {}", path))?,
-            Some(other) => bail!("unsupported encoding for {}: {}", path, other),
+            Some(other) => {
+                return Err(GitClosureError::Parse(format!(
+                    "unsupported encoding for {}: {}",
+                    path, other
+                )));
+            }
             None => content_field.as_bytes().to_vec(),
         };
 
         if content.len() as u64 != size {
-            bail!(
-                "size mismatch for {}: metadata {}, decoded {}",
+            return Err(GitClosureError::SizeMismatch {
                 path,
-                size,
-                content.len()
-            );
+                expected: size,
+                actual: content.len() as u64,
+            });
         }
 
         files.push(SnapshotFile {
@@ -888,13 +910,13 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 fn sanitized_relative_path(path: &str) -> Result<PathBuf> {
     if path.is_empty() {
-        bail!("path is empty");
+        return Err(GitClosureError::UnsafePath("path is empty".to_string()));
     }
 
     let candidate = Path::new(path);
 
     if candidate.is_absolute() {
-        bail!("absolute paths are forbidden: {}", path);
+        return Err(GitClosureError::UnsafePath(path.to_string()));
     }
 
     let mut clean = PathBuf::new();
@@ -905,13 +927,16 @@ fn sanitized_relative_path(path: &str) -> Result<PathBuf> {
             | Component::ParentDir
             | Component::RootDir
             | Component::Prefix(_) => {
-                bail!("unsafe path in snapshot: {}", path)
+                return Err(GitClosureError::UnsafePath(path.to_string()));
             }
         }
     }
 
     if clean.as_os_str().is_empty() {
-        bail!("path normalizes to empty path: {}", path);
+        return Err(GitClosureError::UnsafePath(format!(
+            "path normalizes to empty path: {}",
+            path
+        )));
     }
 
     Ok(clean)
@@ -923,6 +948,7 @@ mod tests {
         build_snapshot, build_snapshot_from_provider, build_snapshot_with_options,
         materialize_snapshot, verify_snapshot, BuildOptions,
     };
+    use crate::error::GitClosureError;
     use crate::providers::{FetchedSource, Provider};
     use std::fs;
     use std::io::Write;
@@ -1108,6 +1134,55 @@ mod tests {
                 && message.contains("re-snapshot"),
             "error should mention legacy header migration: {message}"
         );
+    }
+
+    #[test]
+    fn verify_legacy_header_maps_to_typed_error() {
+        let temp = TempDir::new().expect("create tempdir");
+        let snapshot = temp.path().join("legacy.gcl");
+        fs::write(
+            &snapshot,
+            ";; git-closure snapshot v0.1\n;; format-hash: deadbeef\n;; file-count: 0\n\n()\n",
+        )
+        .expect("write legacy snapshot");
+
+        let err = verify_snapshot(&snapshot).expect_err("legacy header should fail");
+        assert!(matches!(err, GitClosureError::LegacyHeader(_)));
+    }
+
+    #[test]
+    fn materialize_path_traversal_maps_to_typed_error() {
+        let temp = TempDir::new().expect("create tempdir");
+        let snapshot = temp.path().join("evil.gcl");
+        let output = temp.path().join("out");
+
+        let content = "x";
+        let digest = {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(content.as_bytes());
+            format!("{:x}", hasher.finalize())
+        };
+
+        let snapshot_hash = {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(("../escape.txt".len() as u64).to_be_bytes());
+            hasher.update(b"../escape.txt");
+            hasher.update(b"644");
+            hasher.update([0x00]);
+            hasher.update(digest.as_bytes());
+            hasher.update([0x00]);
+            format!("{:x}", hasher.finalize())
+        };
+
+        let snapshot_text = format!(
+            ";; git-closure snapshot v0.1\n;; snapshot-hash: {snapshot_hash}\n;; file-count: 1\n\n(\n  ((:path \"../escape.txt\" :sha256 \"{digest}\" :mode \"644\" :size 1) \"x\")\n)\n"
+        );
+        fs::write(&snapshot, snapshot_text).expect("write malicious snapshot");
+
+        let err = materialize_snapshot(&snapshot, &output).expect_err("materialize should fail");
+        assert!(matches!(err, GitClosureError::UnsafePath(_)));
     }
 
     #[test]
