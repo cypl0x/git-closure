@@ -993,6 +993,9 @@ fn lexical_normalize(path: &Path) -> Result<PathBuf> {
             }
             Component::CurDir => {}
             Component::ParentDir => {
+                // POSIX path resolution keeps root stable (`/..` is `/`).
+                // So once a lexical root has been seen, additional parent
+                // components must not error and must not escape above `/`.
                 if !normalized.pop() && !has_root {
                     return Err(GitClosureError::UnsafePath(format!(
                         "path escapes lexical root: {}",
@@ -1563,6 +1566,32 @@ mod tests {
 
         let err = materialize_snapshot(&snapshot, &output)
             .expect_err("relative traversal symlink must be rejected");
+        assert!(matches!(err, GitClosureError::UnsafePath(_)));
+    }
+
+    #[test]
+    fn lexical_normalize_posix_root_parent_stays_at_root() {
+        let normalized = super::lexical_normalize(Path::new("/../..")).expect("normalize root");
+        assert_eq!(normalized, std::path::PathBuf::from("/"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn materialize_rejects_symlink_whose_effective_target_is_root() {
+        let temp = TempDir::new().expect("create tempdir");
+        let snapshot = temp.path().join("root-target.gcl");
+        let output = temp.path().join("out");
+
+        let path = "link";
+        let target = "/../..";
+        let snapshot_hash = symlink_snapshot_hash(path, target);
+        let snapshot_text = format!(
+            ";; git-closure snapshot v0.1\n;; snapshot-hash: {snapshot_hash}\n;; file-count: 1\n\n(\n  ((:path \"{path}\" :type \"symlink\" :target \"{target}\") \"\")\n)\n"
+        );
+        fs::write(&snapshot, snapshot_text).expect("write symlink snapshot");
+
+        let err = materialize_snapshot(&snapshot, &output)
+            .expect_err("symlink resolving to root must be rejected");
         assert!(matches!(err, GitClosureError::UnsafePath(_)));
     }
 
