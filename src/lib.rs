@@ -1,6 +1,6 @@
 use std::ffi::OsStr;
 use std::fs;
-use std::io::Write;
+use std::io::{self, Write};
 use std::os::unix::fs::symlink;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
@@ -89,14 +89,14 @@ pub fn build_snapshot_with_options(
         fs::create_dir_all(parent)?;
     }
 
-    let mut writer = fs::File::create(output)?;
+    let mut writer = fs::File::create(output).map_err(|err| io_error_with_path(err, output))?;
     writer.write_all(serialized.as_bytes())?;
 
     Ok(())
 }
 
 pub fn materialize_snapshot(snapshot: &Path, output: &Path) -> Result<()> {
-    let text = fs::read_to_string(snapshot)?;
+    let text = fs::read_to_string(snapshot).map_err(|err| io_error_with_path(err, snapshot))?;
 
     let (header, files) = parse_snapshot(&text)?;
 
@@ -108,7 +108,7 @@ pub fn materialize_snapshot(snapshot: &Path, output: &Path) -> Result<()> {
         });
     }
 
-    fs::create_dir_all(output)?;
+    fs::create_dir_all(output).map_err(|err| io_error_with_path(err, output))?;
 
     let output_abs = fs::canonicalize(output)?;
 
@@ -170,7 +170,7 @@ pub fn materialize_snapshot(snapshot: &Path, output: &Path) -> Result<()> {
 }
 
 pub fn verify_snapshot(snapshot: &Path) -> Result<VerifyReport> {
-    let text = fs::read_to_string(snapshot)?;
+    let text = fs::read_to_string(snapshot).map_err(|err| io_error_with_path(err, snapshot))?;
 
     let (header, files) = parse_snapshot(&text)?;
 
@@ -937,6 +937,10 @@ fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+fn io_error_with_path(err: io::Error, path: &Path) -> io::Error {
+    io::Error::new(err.kind(), format!("{}: {}", path.display(), err))
+}
+
 fn sanitized_relative_path(path: &str) -> Result<PathBuf> {
     if path.is_empty() {
         return Err(GitClosureError::UnsafePath("path is empty".to_string()));
@@ -1169,6 +1173,47 @@ mod tests {
         assert!(
             matches!(err, GitClosureError::Io(_)),
             "expected Io variant, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn io_error_display_includes_snapshot_path() {
+        let path = std::path::Path::new("/nonexistent/path/my-snapshot.gcl");
+        let err = verify_snapshot(path).expect_err("should fail on missing file");
+
+        assert!(
+            matches!(err, GitClosureError::Io(_)),
+            "expected Io variant, got: {err:?}"
+        );
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("my-snapshot.gcl") || msg.contains("nonexistent"),
+            "error message must contain path context, got: {msg:?}"
+        );
+    }
+
+    #[test]
+    fn io_error_display_includes_output_path_on_missing_dir() {
+        let source = TempDir::new().expect("create source tempdir");
+        fs::write(source.path().join("ok.txt"), b"ok\n").expect("write file");
+        let snapshot = source.path().join("snap.gcl");
+        build_snapshot(source.path(), &snapshot).expect("build snapshot");
+
+        let blocked_parent = source.path().join("blocked-parent");
+        fs::write(&blocked_parent, b"not a directory").expect("create blocking file");
+        let bad_output = blocked_parent.join("output-dir");
+        let err = materialize_snapshot(&snapshot, &bad_output)
+            .expect_err("should fail on non-directory parent");
+
+        assert!(
+            matches!(err, GitClosureError::Io(_)),
+            "expected Io variant, got: {err:?}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("output-dir") || msg.contains("blocked-parent"),
+            "error message must contain output path context, got: {msg:?}"
         );
     }
 
