@@ -168,10 +168,11 @@ impl Provider for NixProvider {
         let output = run_command_output("nix", &["flake", "metadata", normalized, "--json"], None)?;
 
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(GitClosureError::Parse(format!(
-                "nix flake metadata failed: {stderr}"
-            )));
+            return Err(GitClosureError::CommandExitFailure {
+                command: "nix",
+                status: output.status.to_string(),
+                stderr: truncate_stderr(&output.stderr),
+            });
         }
 
         let path = parse_nix_metadata_path(&output.stdout)?;
@@ -293,7 +294,7 @@ pub(crate) fn run_command_output(
         .map_err(|source| GitClosureError::CommandSpawnFailed { command, source })
 }
 
-fn truncate_stderr(bytes: &[u8]) -> String {
+pub(crate) fn truncate_stderr(bytes: &[u8]) -> String {
     const MAX_BYTES: usize = 512;
     let trimmed = String::from_utf8_lossy(bytes).trim().to_string();
     if trimmed.len() <= MAX_BYTES {
@@ -311,7 +312,7 @@ fn truncate_stderr(bytes: &[u8]) -> String {
 mod tests {
     use super::{
         parse_git_source, parse_nix_metadata_path, run_command_output, run_command_status,
-        split_repo_ref, truncate_stderr, GitCloneProvider, Provider,
+        split_repo_ref, truncate_stderr, GitCloneProvider, NixProvider, Provider,
     };
     use crate::error::GitClosureError;
     use std::io::ErrorKind;
@@ -419,5 +420,27 @@ mod tests {
                 || display.contains("unknown"),
             "error display must include stderr context, got: {display:?}"
         );
+    }
+
+    #[test]
+    fn nix_provider_exit_failure_maps_to_command_exit_failure() {
+        let provider = NixProvider;
+        let err = match provider.fetch("path:/definitely/not/here") {
+            Ok(_) => panic!("invalid local flake path should fail"),
+            Err(err) => err,
+        };
+
+        match err {
+            GitClosureError::CommandExitFailure {
+                command, stderr, ..
+            } => {
+                assert_eq!(command, "nix");
+                assert!(
+                    !stderr.is_empty(),
+                    "stderr should be captured for nix exit failure"
+                );
+            }
+            other => panic!("expected CommandExitFailure, got {other:?}"),
+        }
     }
 }
