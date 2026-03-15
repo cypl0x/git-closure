@@ -181,6 +181,10 @@ pub struct GithubApiProvider;
 
 impl Provider for GithubApiProvider {
     fn fetch(&self, source: &str) -> Result<FetchedSource> {
+        eprintln!(
+            "warning: --provider github-api is not yet implemented; falling back to git clone"
+        );
+        // TODO: implement GitHub tarball fetch via GET /repos/{owner}/{repo}/tarball/{ref}.
         let git_provider = GitCloneProvider;
         git_provider.fetch(source)
     }
