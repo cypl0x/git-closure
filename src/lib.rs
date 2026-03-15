@@ -1031,6 +1031,9 @@ mod tests {
         let alpha_path = source.path().join("alpha.txt");
         fs::write(&alpha_path, b"alpha\n").expect("write alpha.txt");
 
+        #[cfg(unix)]
+        symlink("alpha.txt", source.path().join("link-to-alpha")).expect("create fixture symlink");
+
         let nested_dir = source.path().join("nested");
         fs::create_dir_all(&nested_dir).expect("create nested directory");
         let script_path = nested_dir.join("script.sh");
@@ -1055,9 +1058,51 @@ mod tests {
         materialize_snapshot(&snapshot_a, restored.path()).expect("materialize snapshot");
         build_snapshot(restored.path(), &snapshot_b).expect("build second snapshot");
 
+        #[cfg(unix)]
+        {
+            let restored_link = restored.path().join("link-to-alpha");
+            assert!(
+                restored_link.exists(),
+                "round-trip fixture must include a materialized symlink"
+            );
+            let target = fs::read_link(&restored_link).expect("read materialized fixture symlink");
+            assert_eq!(target, std::path::PathBuf::from("alpha.txt"));
+        }
+
         let a = fs::read(&snapshot_a).expect("read snapshot-a");
         let b = fs::read(&snapshot_b).expect("read snapshot-b");
         assert_eq!(a, b, "round trip snapshots differ");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn round_trip_includes_symlink() {
+        let source = TempDir::new().expect("create source tempdir");
+        let restored = TempDir::new().expect("create restored tempdir");
+
+        fs::write(source.path().join("alpha.txt"), b"alpha\n").expect("write alpha");
+        std::os::unix::fs::symlink("alpha.txt", source.path().join("link-to-alpha"))
+            .expect("create symlink");
+
+        let snapshot_a = source.path().join("snap-a.gcl");
+        let snapshot_b = source.path().join("snap-b.gcl");
+
+        build_snapshot(source.path(), &snapshot_a).expect("build snapshot");
+        materialize_snapshot(&snapshot_a, restored.path()).expect("materialize");
+        build_snapshot(restored.path(), &snapshot_b).expect("rebuild");
+
+        assert_eq!(
+            fs::read(&snapshot_a).expect("read snap-a"),
+            fs::read(&snapshot_b).expect("read snap-b"),
+            "symlink round-trip must be byte-identical"
+        );
+
+        let link = restored.path().join("link-to-alpha");
+        assert!(link.exists(), "symlink must exist after materialize");
+        assert_eq!(
+            fs::read_link(&link).expect("read link"),
+            std::path::PathBuf::from("alpha.txt")
+        );
     }
 
     #[test]
@@ -1373,6 +1418,16 @@ mod tests {
         );
         let target = fs::read_link(&restored_link).expect("read materialized symlink target");
         assert_eq!(target, std::path::PathBuf::from("target.txt"));
+
+        let snapshot_b = restored.path().join("snapshot-b.gcl");
+        build_snapshot(restored.path(), &snapshot_b).expect("rebuild from materialized snapshot");
+
+        let a_bytes = fs::read(&snapshot).expect("read original snapshot");
+        let b_bytes = fs::read(&snapshot_b).expect("read rebuilt snapshot");
+        assert_eq!(
+            a_bytes, b_bytes,
+            "rebuild from materialized symlink snapshot must be byte-identical"
+        );
     }
 
     #[cfg(unix)]
