@@ -920,7 +920,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_hash_differs_for_same_content_different_paths() {
+    fn collision_regression_same_content_different_path() {
         let left = TempDir::new().expect("create left tempdir");
         let right = TempDir::new().expect("create right tempdir");
 
@@ -944,7 +944,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn snapshot_hash_differs_for_same_path_different_modes() {
+    fn collision_regression_same_path_different_mode() {
         let left = TempDir::new().expect("create left tempdir");
         let right = TempDir::new().expect("create right tempdir");
 
@@ -1000,7 +1000,7 @@ mod tests {
     }
 
     #[test]
-    fn build_is_byte_identical_for_same_directory() {
+    fn collision_regression_rebuild_is_byte_identical() {
         let source = TempDir::new().expect("create source tempdir");
         let snapshots = TempDir::new().expect("create snapshot tempdir");
         fs::write(source.path().join("a.txt"), b"alpha\n").expect("write a.txt");
