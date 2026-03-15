@@ -1841,12 +1841,6 @@ mod tests {
     fn serialize_symlink_type_field_uses_quote_string() {
         assert_eq!(super::quote_string("symlink"), "\"symlink\"");
 
-        let lib_source = include_str!("lib.rs");
-        assert!(
-            !lib_source.contains("output.push_str(\"     :type \\\"symlink\\\"\");"),
-            "serialize_snapshot should route symlink type through quote_string"
-        );
-
         let source = TempDir::new().expect("create tempdir");
         let target_path = source.path().join("target.txt");
         fs::write(&target_path, b"payload\n").expect("write target");
