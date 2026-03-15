@@ -473,16 +473,18 @@ fn ensure_git_source_is_clean(context: &GitRepoContext) -> Result<()> {
             continue;
         }
 
-        if entry.len() < 4 {
-            continue;
+        if entry.len() < 4 || entry[2] != b' ' {
+            return Err(GitClosureError::Parse(format!(
+                "git status produced malformed porcelain entry: {:?}",
+                entry
+            )));
         }
 
+        let xy = &entry[..2];
         let path_bytes = &entry[3..];
-        let path = std::str::from_utf8(path_bytes)
-            .map_err(|err| {
-                GitClosureError::Parse(format!("git status produced non-UTF-8 path: {err}"))
-            })?
-            .trim();
+        let path = std::str::from_utf8(path_bytes).map_err(|err| {
+            GitClosureError::Parse(format!("git status produced non-UTF-8 path: {err}"))
+        })?;
 
         let repo_relative = Path::new(path);
         if is_within_prefix(repo_relative, &context.source_prefix) {
@@ -492,8 +494,26 @@ fn ensure_git_source_is_clean(context: &GitRepoContext) -> Result<()> {
             )));
         }
 
-        if entry.starts_with(b"R") || entry.starts_with(b"C") {
-            let _ = chunks.next();
+        if matches!(xy[0], b'R' | b'C') || matches!(xy[1], b'R' | b'C') {
+            let source_path_bytes = chunks.next().ok_or_else(|| {
+                GitClosureError::Parse(
+                    "git status rename/copy entry missing source path chunk".to_string(),
+                )
+            })?;
+            if source_path_bytes.is_empty() {
+                return Err(GitClosureError::Parse(
+                    "git status rename/copy source path is empty".to_string(),
+                ));
+            }
+            let source_path = std::str::from_utf8(source_path_bytes).map_err(|err| {
+                GitClosureError::Parse(format!("git status produced non-UTF-8 path: {err}"))
+            })?;
+            if is_within_prefix(Path::new(source_path), &context.source_prefix) {
+                return Err(GitClosureError::Parse(format!(
+                    "source tree is dirty at {} (use --include-untracked or clean working tree)",
+                    source_path
+                )));
+            }
         }
     }
 
@@ -1265,6 +1285,18 @@ mod tests {
     }
 
     #[test]
+    fn verify_odd_length_plist_returns_parse_error() {
+        let temp = TempDir::new().expect("create tempdir");
+        let snapshot = temp.path().join("malformed-plist.gcl");
+
+        let snapshot_text = ";; git-closure snapshot v0.1\n;; snapshot-hash: deadbeef\n;; file-count: 1\n\n(\n  ((:path \"x.txt\" :sha256) \"x\")\n)\n";
+        fs::write(&snapshot, snapshot_text).expect("write malformed snapshot");
+
+        let err = verify_snapshot(&snapshot).expect_err("odd-length plist should fail parse");
+        assert!(matches!(err, GitClosureError::Parse(_)));
+    }
+
+    #[test]
     fn collision_regression_same_content_different_path() {
         let left = TempDir::new().expect("create left tempdir");
         let right = TempDir::new().expect("create right tempdir");
@@ -1749,6 +1781,126 @@ mod tests {
         );
     }
 
+    #[test]
+    fn git_mode_require_clean_rejects_staged_changes() {
+        let repo = TempDir::new().expect("create temp repo");
+        init_git_repo(repo.path());
+
+        fs::write(repo.path().join("tracked.txt"), b"tracked\n").expect("write tracked");
+        run_git(repo.path(), &["add", "tracked.txt"]);
+        run_git(repo.path(), &["commit", "-m", "initial"]);
+
+        fs::write(repo.path().join("staged.txt"), b"staged\n").expect("write staged");
+        run_git(repo.path(), &["add", "staged.txt"]);
+
+        let snapshot = repo.path().join("snapshot.gcl");
+        let result = build_snapshot_with_options(
+            repo.path(),
+            &snapshot,
+            &BuildOptions {
+                include_untracked: false,
+                require_clean: true,
+            },
+        );
+        assert!(result.is_err(), "staged change should fail require_clean");
+    }
+
+    #[test]
+    fn git_mode_require_clean_rejects_rename_inside_source_to_outside() {
+        let repo = TempDir::new().expect("create temp repo");
+        init_git_repo(repo.path());
+
+        let source_dir = repo.path().join("src");
+        fs::create_dir_all(&source_dir).expect("create source dir");
+        fs::write(source_dir.join("tracked.txt"), b"tracked\n").expect("write tracked");
+        run_git(repo.path(), &["add", "src/tracked.txt"]);
+        run_git(repo.path(), &["commit", "-m", "initial"]);
+
+        run_git(repo.path(), &["mv", "src/tracked.txt", "moved.txt"]);
+
+        let snapshot = repo.path().join("snapshot.gcl");
+        let result = build_snapshot_with_options(
+            &source_dir,
+            &snapshot,
+            &BuildOptions {
+                include_untracked: false,
+                require_clean: true,
+            },
+        );
+        assert!(
+            result.is_err(),
+            "rename moving file out of source prefix should fail require_clean"
+        );
+    }
+
+    #[test]
+    fn git_mode_require_clean_ignores_untracked_outside_source_prefix() {
+        let repo = TempDir::new().expect("create temp repo");
+        init_git_repo(repo.path());
+
+        let source_dir = repo.path().join("src");
+        fs::create_dir_all(&source_dir).expect("create source dir");
+        fs::write(source_dir.join("tracked.txt"), b"tracked\n").expect("write tracked");
+        run_git(repo.path(), &["add", "src/tracked.txt"]);
+        run_git(repo.path(), &["commit", "-m", "initial"]);
+
+        fs::write(repo.path().join("outside.txt"), b"outside\n").expect("write outside file");
+
+        let snapshot = repo.path().join("snapshot.gcl");
+        let result = build_snapshot_with_options(
+            &source_dir,
+            &snapshot,
+            &BuildOptions {
+                include_untracked: false,
+                require_clean: true,
+            },
+        );
+        assert!(
+            result.is_ok(),
+            "untracked file outside source prefix should not fail require_clean"
+        );
+    }
+
+    #[test]
+    fn git_mode_require_clean_rejects_unmerged_conflict() {
+        let repo = TempDir::new().expect("create temp repo");
+        init_git_repo(repo.path());
+        let base_branch = current_git_branch(repo.path());
+
+        fs::write(repo.path().join("conflict.txt"), b"base\n").expect("write base");
+        run_git(repo.path(), &["add", "conflict.txt"]);
+        run_git(repo.path(), &["commit", "-m", "base"]);
+
+        run_git(repo.path(), &["checkout", "-b", "feature"]);
+        fs::write(repo.path().join("conflict.txt"), b"feature\n").expect("write feature");
+        run_git(repo.path(), &["commit", "-am", "feature"]);
+
+        run_git(repo.path(), &["checkout", &base_branch]);
+        fs::write(repo.path().join("conflict.txt"), b"main\n").expect("write main");
+        run_git(repo.path(), &["commit", "-am", "main"]);
+
+        let merge_status = Command::new("git")
+            .args(["merge", "feature"])
+            .current_dir(repo.path())
+            .status()
+            .expect("run merge");
+        assert!(!merge_status.success(), "merge should produce conflict");
+
+        let snapshot = repo.path().join("snapshot.gcl");
+        let result = build_snapshot_with_options(
+            repo.path(),
+            &snapshot,
+            &BuildOptions {
+                include_untracked: false,
+                require_clean: true,
+            },
+        );
+        assert!(
+            result.is_err(),
+            "unmerged conflict should fail require_clean"
+        );
+    }
+
     fn init_git_repo(path: &Path) {
         run_git(path, &["init"]);
         run_git(path, &["config", "user.name", "git-closure-test"]);
@@ -1765,6 +1917,19 @@ mod tests {
             .status()
             .expect("failed to run git command");
         assert!(status.success(), "git command failed: git {:?}", args);
+    }
+
+    fn current_git_branch(path: &Path) -> String {
+        let output = Command::new("git")
+            .args(["symbolic-ref", "--short", "HEAD"])
+            .current_dir(path)
+            .output()
+            .expect("failed to read current git branch");
+        assert!(output.status.success(), "failed to resolve current branch");
+        String::from_utf8(output.stdout)
+            .expect("branch output should be UTF-8")
+            .trim()
+            .to_string()
     }
 
     fn read_snapshot_hash(snapshot: &Path) -> String {
@@ -1914,6 +2079,15 @@ mod tests {
         verify_snapshot(&snapshot).expect("verify must pass after serialization fix");
     }
 
+    #[test]
+    #[should_panic(expected = "MockProvider called with unexpected source")]
+    fn mock_provider_panics_on_wrong_source() {
+        let provider = MockProvider {
+            root: std::path::PathBuf::new(),
+        };
+        let _ = provider.fetch("wrong://source");
+    }
+
     struct MockProvider {
         root: std::path::PathBuf,
     }
@@ -1921,9 +2095,7 @@ mod tests {
     impl Provider for MockProvider {
         fn fetch(&self, source: &str) -> std::result::Result<FetchedSource, GitClosureError> {
             if source != "mock://example/repo" {
-                return Err(GitClosureError::Parse(format!(
-                    "unexpected mock source: {source}"
-                )));
+                panic!("MockProvider called with unexpected source: {source}");
             }
             Ok(FetchedSource::local(self.root.clone()))
         }
