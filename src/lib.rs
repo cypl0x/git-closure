@@ -141,9 +141,18 @@ pub fn materialize_snapshot(snapshot: &Path, output: &Path) -> Result<()> {
 
         if let Some(target) = &file.symlink_target {
             let target_path = Path::new(target);
-            if target_path.is_absolute() && !target_path.starts_with(&output_abs) {
+            let effective_target = if target_path.is_absolute() {
+                target_path.to_path_buf()
+            } else {
+                destination
+                    .parent()
+                    .unwrap_or(&output_abs)
+                    .join(target_path)
+            };
+            let normalized_target = lexical_normalize(&effective_target)?;
+            if !normalized_target.starts_with(&output_abs) {
                 return Err(GitClosureError::UnsafePath(format!(
-                    "absolute symlink target escapes output directory for {}: {}",
+                    "symlink target escapes output directory for {}: {}",
                     file.path, target
                 )));
             }
@@ -942,6 +951,38 @@ fn sanitized_relative_path(path: &str) -> Result<PathBuf> {
     Ok(clean)
 }
 
+fn lexical_normalize(path: &Path) -> Result<PathBuf> {
+    let mut normalized = PathBuf::new();
+    let mut has_root = false;
+
+    for component in path.components() {
+        match component {
+            Component::Prefix(_) => {
+                return Err(GitClosureError::UnsafePath(format!(
+                    "unsupported path prefix: {}",
+                    path.display()
+                )));
+            }
+            Component::RootDir => {
+                normalized.push(Path::new("/"));
+                has_root = true;
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() && !has_root {
+                    return Err(GitClosureError::UnsafePath(format!(
+                        "path escapes lexical root: {}",
+                        path.display()
+                    )));
+                }
+            }
+            Component::Normal(part) => normalized.push(part),
+        }
+    }
+
+    Ok(normalized)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1272,9 +1313,74 @@ mod tests {
             .expect_err("absolute symlink target outside output must fail");
         let message = format!("{err:#}");
         assert!(
-            message.contains("absolute") && message.contains("symlink"),
+            message.contains("symlink") && message.contains("escapes output directory"),
             "error should explain unsafe absolute symlink target: {message}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn materialize_rejects_relative_symlink_traversal() {
+        let temp = TempDir::new().expect("create tempdir");
+        let snapshot = temp.path().join("escape-relative.gcl");
+        let output = temp.path().join("out");
+
+        let path = "foo/link";
+        let target = "../../etc/passwd";
+        let snapshot_hash = symlink_snapshot_hash(path, target);
+        let snapshot_text = format!(
+            ";; git-closure snapshot v0.1\n;; snapshot-hash: {snapshot_hash}\n;; file-count: 1\n\n(\n  ((:path \"{path}\" :type \"symlink\" :target \"{target}\") \"\")\n)\n"
+        );
+        fs::write(&snapshot, snapshot_text).expect("write symlink snapshot");
+
+        let err = materialize_snapshot(&snapshot, &output)
+            .expect_err("relative traversal symlink must be rejected");
+        assert!(matches!(err, GitClosureError::UnsafePath(_)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn materialize_accepts_valid_relative_symlink() {
+        let temp = TempDir::new().expect("create tempdir");
+        let snapshot = temp.path().join("valid-relative.gcl");
+        let output = temp.path().join("out");
+
+        let path = "subdir/link";
+        let target = "../sibling.txt";
+        let snapshot_hash = symlink_snapshot_hash(path, target);
+        let snapshot_text = format!(
+            ";; git-closure snapshot v0.1\n;; snapshot-hash: {snapshot_hash}\n;; file-count: 1\n\n(\n  ((:path \"{path}\" :type \"symlink\" :target \"{target}\") \"\")\n)\n"
+        );
+        fs::write(&snapshot, snapshot_text).expect("write symlink snapshot");
+
+        materialize_snapshot(&snapshot, &output).expect("safe relative symlink should materialize");
+
+        let link = output.join("subdir/link");
+        let actual_target = fs::read_link(&link).expect("read materialized symlink");
+        assert_eq!(actual_target, std::path::PathBuf::from(target));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn materialize_accepts_deeply_nested_relative_symlink() {
+        let temp = TempDir::new().expect("create tempdir");
+        let snapshot = temp.path().join("valid-deep-relative.gcl");
+        let output = temp.path().join("out");
+
+        let path = "a/b/c/link";
+        let target = "../../d/target.txt";
+        let snapshot_hash = symlink_snapshot_hash(path, target);
+        let snapshot_text = format!(
+            ";; git-closure snapshot v0.1\n;; snapshot-hash: {snapshot_hash}\n;; file-count: 1\n\n(\n  ((:path \"{path}\" :type \"symlink\" :target \"{target}\") \"\")\n)\n"
+        );
+        fs::write(&snapshot, snapshot_text).expect("write symlink snapshot");
+
+        materialize_snapshot(&snapshot, &output)
+            .expect("nested safe relative symlink should materialize");
+
+        let link = output.join("a/b/c/link");
+        let actual_target = fs::read_link(&link).expect("read materialized symlink");
+        assert_eq!(actual_target, std::path::PathBuf::from(target));
     }
 
     #[test]
