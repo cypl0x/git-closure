@@ -1,7 +1,9 @@
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, Write};
+#[cfg(unix)]
 use std::os::unix::fs::symlink;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 
@@ -14,7 +16,7 @@ pub mod error;
 pub mod providers;
 
 pub use error::GitClosureError;
-use providers::{fetch_source, run_command_output, Provider, ProviderKind};
+use providers::{fetch_source, run_command_output, truncate_stderr, Provider, ProviderKind};
 
 type Result<T> = std::result::Result<T, GitClosureError>;
 
@@ -69,7 +71,7 @@ pub fn build_snapshot_with_options(
     output: &Path,
     options: &BuildOptions,
 ) -> Result<()> {
-    let source = fs::canonicalize(source)?;
+    let source = fs::canonicalize(source).map_err(|err| io_error_with_path(err, source))?;
 
     if !source.is_dir() {
         return Err(GitClosureError::Parse(format!(
@@ -109,7 +111,7 @@ pub fn materialize_snapshot(snapshot: &Path, output: &Path) -> Result<()> {
 
     fs::create_dir_all(output).map_err(|err| io_error_with_path(err, output))?;
 
-    let output_abs = fs::canonicalize(output)?;
+    let output_abs = fs::canonicalize(output).map_err(|err| io_error_with_path(err, output))?;
 
     for file in files {
         let relative = sanitized_relative_path(&file.path)?;
@@ -457,32 +459,27 @@ fn ensure_git_source_is_clean(context: &GitRepoContext) -> Result<()> {
     )?;
 
     if !output.status.success() {
-        return Err(GitClosureError::Parse(
-            "git status failed during clean check".to_string(),
-        ));
+        return Err(GitClosureError::CommandExitFailure {
+            command: "git",
+            status: output.status.to_string(),
+            stderr: truncate_stderr(&output.stderr),
+        });
     }
 
-    let mut chunks = output.stdout.split(|b| *b == 0u8);
+    evaluate_git_status_porcelain(&output.stdout, &context.source_prefix)
+}
+
+fn evaluate_git_status_porcelain(stdout: &[u8], source_prefix: &Path) -> Result<()> {
+    let mut chunks = stdout.split(|b| *b == 0u8);
     while let Some(entry) = chunks.next() {
         if entry.is_empty() {
             continue;
         }
 
-        if entry.len() < 4 || entry[2] != b' ' {
-            return Err(GitClosureError::Parse(format!(
-                "git status produced malformed porcelain entry: {:?}",
-                entry
-            )));
-        }
-
-        let xy = &entry[..2];
-        let path_bytes = &entry[3..];
-        let path = std::str::from_utf8(path_bytes).map_err(|err| {
-            GitClosureError::Parse(format!("git status produced non-UTF-8 path: {err}"))
-        })?;
+        let (xy, path) = parse_porcelain_entry(entry)?;
 
         let repo_relative = Path::new(path);
-        if is_within_prefix(repo_relative, &context.source_prefix) {
+        if is_within_prefix(repo_relative, source_prefix) {
             return Err(GitClosureError::Parse(format!(
                 "source tree is dirty at {} (use --include-untracked or clean working tree)",
                 path
@@ -503,7 +500,7 @@ fn ensure_git_source_is_clean(context: &GitRepoContext) -> Result<()> {
             let source_path = std::str::from_utf8(source_path_bytes).map_err(|err| {
                 GitClosureError::Parse(format!("git status produced non-UTF-8 path: {err}"))
             })?;
-            if is_within_prefix(Path::new(source_path), &context.source_prefix) {
+            if is_within_prefix(Path::new(source_path), source_prefix) {
                 return Err(GitClosureError::Parse(format!(
                     "source tree is dirty at {} (use --include-untracked or clean working tree)",
                     source_path
@@ -515,6 +512,21 @@ fn ensure_git_source_is_clean(context: &GitRepoContext) -> Result<()> {
     Ok(())
 }
 
+fn parse_porcelain_entry(entry: &[u8]) -> Result<([u8; 2], &str)> {
+    if entry.len() < 4 || entry[2] != b' ' {
+        return Err(GitClosureError::Parse(format!(
+            "git status produced malformed porcelain entry: {:?}",
+            entry
+        )));
+    }
+
+    let xy = [entry[0], entry[1]];
+    let path = std::str::from_utf8(&entry[3..]).map_err(|err| {
+        GitClosureError::Parse(format!("git status produced non-UTF-8 path: {err}"))
+    })?;
+    Ok((xy, path))
+}
+
 fn git_ls_files(context: &GitRepoContext, include_untracked: bool) -> Result<Vec<PathBuf>> {
     let mut args = vec!["ls-files", "-z", "--cached"];
     if include_untracked {
@@ -524,7 +536,11 @@ fn git_ls_files(context: &GitRepoContext, include_untracked: bool) -> Result<Vec
     let output = run_command_output("git", &args, Some(&context.workdir))?;
 
     if !output.status.success() {
-        return Err(GitClosureError::Parse("git ls-files failed".to_string()));
+        return Err(GitClosureError::CommandExitFailure {
+            command: "git",
+            status: output.status.to_string(),
+            stderr: truncate_stderr(&output.stderr),
+        });
     }
 
     let mut paths = Vec::new();
@@ -549,6 +565,9 @@ fn is_within_prefix(path: &Path, prefix: &Path) -> bool {
 }
 
 fn normalize_relative_path(path: &Path) -> Result<String> {
+    // `.gcl` path canonicalization is host-independent: snapshot paths are always
+    // forward-slash-separated UTF-8 regardless of platform separator semantics.
+    // Any Windows port must normalize `\` to `/` at this boundary.
     if path.is_absolute() {
         return Err(GitClosureError::UnsafePath(path.display().to_string()));
     }
@@ -601,6 +620,10 @@ fn normalize_relative_path(path: &Path) -> Result<String> {
 ///
 /// For "symlink" entries additionally:
 ///   [target_len: u64 be]     [target: UTF-8]
+///
+/// NOTE: v0.1 intentionally omits a content-only `payload_hash` aggregate
+/// (SHA-256 over file bytes without path/mode metadata). Add it only when a
+/// feature requires content-addressable or dedup-focused workflows (e.g. diff/CAS).
 fn compute_snapshot_hash(files: &[SnapshotFile]) -> String {
     let mut hasher = Sha256::new();
     for file in files {
@@ -1026,13 +1049,15 @@ fn lexical_normalize(path: &Path) -> Result<PathBuf> {
 mod tests {
     use super::{
         build_snapshot, build_snapshot_from_provider, build_snapshot_with_options,
-        compute_snapshot_hash, materialize_snapshot, verify_snapshot, BuildOptions, SnapshotFile,
+        compute_snapshot_hash, ensure_git_source_is_clean, evaluate_git_status_porcelain,
+        git_ls_files, materialize_snapshot, parse_porcelain_entry, verify_snapshot, BuildOptions,
+        GitRepoContext, SnapshotFile,
     };
     use crate::error::GitClosureError;
     use crate::providers::{FetchedSource, Provider};
     use std::fs;
     use std::io::Write;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::process::Command;
 
     use tempfile::TempDir;
@@ -1256,6 +1281,25 @@ mod tests {
     }
 
     #[test]
+    fn io_error_display_includes_build_source_path_on_canonicalize_failure() {
+        let missing = Path::new("/nonexistent/path/missing-source-dir");
+        let output = Path::new("/tmp/unused-output.gcl");
+        let err =
+            build_snapshot(missing, output).expect_err("build should fail for missing source");
+
+        assert!(
+            matches!(err, GitClosureError::Io(_)),
+            "expected Io variant, got: {err:?}"
+        );
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("missing-source-dir") || msg.contains("nonexistent"),
+            "error message must include source path context, got: {msg:?}"
+        );
+    }
+
+    #[test]
     fn verify_rejects_bad_format_hash() {
         let temp = TempDir::new().expect("create tempdir");
         let snapshot = temp.path().join("invalid.gcl");
@@ -1286,6 +1330,14 @@ mod tests {
 
         let err = verify_snapshot(&snapshot).expect_err("odd-length plist should fail parse");
         assert!(matches!(err, GitClosureError::Parse(_)));
+        let msg = err.to_string();
+        assert!(
+            msg.contains("plist")
+                || msg.contains("malformed")
+                || msg.contains("parse")
+                || msg.contains("x.txt"),
+            "parse error should include contextual detail, got: {msg:?}"
+        );
     }
 
     #[test]
@@ -1891,6 +1943,81 @@ mod tests {
             result.is_err(),
             "unmerged conflict should fail require_clean"
         );
+    }
+
+    #[test]
+    fn parse_porcelain_entry_rejects_too_short() {
+        let err = parse_porcelain_entry(b"M").expect_err("short entry should fail");
+        assert!(matches!(err, GitClosureError::Parse(_)));
+    }
+
+    #[test]
+    fn parse_porcelain_entry_rejects_missing_xy_separator() {
+        let err = parse_porcelain_entry(b"MMfile.txt").expect_err("missing separator should fail");
+        assert!(matches!(err, GitClosureError::Parse(_)));
+    }
+
+    #[test]
+    fn parse_porcelain_entry_accepts_valid_record() {
+        let (xy, path) = parse_porcelain_entry(b" M file.txt").expect("valid entry");
+        assert_eq!(xy, [b' ', b'M']);
+        assert_eq!(path, "file.txt");
+    }
+
+    #[test]
+    fn evaluate_git_status_porcelain_rejects_copy_source_within_prefix() {
+        let stdout = b"C  copied.txt\0src/original.txt\0";
+        let err = evaluate_git_status_porcelain(stdout, Path::new("src"))
+            .expect_err("copy source under prefix should fail");
+        assert!(matches!(err, GitClosureError::Parse(_)));
+    }
+
+    #[test]
+    fn evaluate_git_status_porcelain_consumes_copy_source_chunk() {
+        let stdout = b"C  outside/new.txt\0outside/original.txt\0";
+        evaluate_git_status_porcelain(stdout, Path::new("src"))
+            .expect("copy outside prefix should not fail and source chunk must be consumed");
+    }
+
+    #[test]
+    fn ensure_git_source_is_clean_non_repo_returns_command_exit_failure() {
+        let temp = TempDir::new().expect("create tempdir");
+        let context = GitRepoContext {
+            workdir: temp.path().to_path_buf(),
+            source_prefix: PathBuf::new(),
+        };
+
+        let err =
+            ensure_git_source_is_clean(&context).expect_err("git status in non-repo should fail");
+        match err {
+            GitClosureError::CommandExitFailure {
+                command, stderr, ..
+            } => {
+                assert_eq!(command, "git");
+                assert!(!stderr.is_empty(), "stderr should be captured");
+            }
+            other => panic!("expected CommandExitFailure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn git_ls_files_non_repo_returns_command_exit_failure() {
+        let temp = TempDir::new().expect("create tempdir");
+        let context = GitRepoContext {
+            workdir: temp.path().to_path_buf(),
+            source_prefix: PathBuf::new(),
+        };
+
+        let err = git_ls_files(&context, false).expect_err("git ls-files in non-repo should fail");
+        match err {
+            GitClosureError::CommandExitFailure {
+                command, stderr, ..
+            } => {
+                assert_eq!(command, "git");
+                assert!(!stderr.is_empty(), "stderr should be captured");
+            }
+            other => panic!("expected CommandExitFailure, got {other:?}"),
+        }
     }
 
     fn init_git_repo(path: &Path) {
