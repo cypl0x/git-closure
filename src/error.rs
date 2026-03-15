@@ -34,9 +34,21 @@ pub enum GitClosureError {
         #[source]
         source: io::Error,
     },
-    #[error("command '{command}' exited with non-zero status: {status}")]
+    #[error(
+        "command '{command}' exited with status {status}{stderr_suffix}",
+        stderr_suffix = format_command_stderr(stderr)
+    )]
     CommandExitFailure {
         command: &'static str,
         status: String,
+        stderr: String,
     },
+}
+
+fn format_command_stderr(stderr: &str) -> String {
+    if stderr.is_empty() {
+        String::new()
+    } else {
+        format!(":\n{stderr}")
+    }
 }

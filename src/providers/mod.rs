@@ -97,7 +97,7 @@ impl Provider for GitCloneProvider {
             .to_str()
             .ok_or_else(|| GitClosureError::Parse("invalid checkout path".to_string()))?;
 
-        let status = run_command_status(
+        let clone_output = run_command_output(
             "git",
             &[
                 "clone",
@@ -110,15 +110,16 @@ impl Provider for GitCloneProvider {
             None,
         )?;
 
-        if !status.success() {
+        if !clone_output.status.success() {
             return Err(GitClosureError::CommandExitFailure {
                 command: "git",
-                status: status.to_string(),
+                status: clone_output.status.to_string(),
+                stderr: truncate_stderr(&clone_output.stderr),
             });
         }
 
         if let Some(reference) = parsed.reference {
-            let fetch_status = run_command_status(
+            let fetch_output = run_command_output(
                 "git",
                 &[
                     "-C",
@@ -132,23 +133,25 @@ impl Provider for GitCloneProvider {
                 None,
             )?;
 
-            if !fetch_status.success() {
+            if !fetch_output.status.success() {
                 return Err(GitClosureError::CommandExitFailure {
                     command: "git",
-                    status: fetch_status.to_string(),
+                    status: fetch_output.status.to_string(),
+                    stderr: truncate_stderr(&fetch_output.stderr),
                 });
             }
 
-            let checkout_status = run_command_status(
+            let checkout_output = run_command_output(
                 "git",
                 &["-C", checkout_str, "checkout", "--detach", "FETCH_HEAD"],
                 None,
             )?;
 
-            if !checkout_status.success() {
+            if !checkout_output.status.success() {
                 return Err(GitClosureError::CommandExitFailure {
                     command: "git",
-                    status: checkout_status.to_string(),
+                    status: checkout_output.status.to_string(),
+                    stderr: truncate_stderr(&checkout_output.stderr),
                 });
             }
         }
@@ -261,6 +264,7 @@ fn parse_nix_metadata_path(output: &[u8]) -> Result<PathBuf> {
     Ok(PathBuf::from(metadata.path))
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn run_command_status(
     command: &'static str,
     args: &[&str],
@@ -289,11 +293,25 @@ pub(crate) fn run_command_output(
         .map_err(|source| GitClosureError::CommandSpawnFailed { command, source })
 }
 
+fn truncate_stderr(bytes: &[u8]) -> String {
+    const MAX_BYTES: usize = 512;
+    let trimmed = String::from_utf8_lossy(bytes).trim().to_string();
+    if trimmed.len() <= MAX_BYTES {
+        return trimmed;
+    }
+
+    let mut end = MAX_BYTES.saturating_sub(3);
+    while end > 0 && !trimmed.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...", &trimmed[..end])
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_git_source, parse_nix_metadata_path, run_command_status, split_repo_ref,
-        GitCloneProvider, Provider,
+        parse_git_source, parse_nix_metadata_path, run_command_output, run_command_status,
+        split_repo_ref, truncate_stderr, GitCloneProvider, Provider,
     };
     use crate::error::GitClosureError;
     use std::io::ErrorKind;
@@ -365,10 +383,41 @@ mod tests {
         };
 
         match err {
-            GitClosureError::CommandExitFailure { command, .. } => {
+            GitClosureError::CommandExitFailure {
+                command, stderr, ..
+            } => {
                 assert_eq!(command, "git");
+                assert!(!stderr.is_empty(), "stderr payload should be captured");
             }
             other => panic!("expected CommandExitFailure, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn command_exit_failure_display_includes_stderr() {
+        let output = run_command_output(
+            "git",
+            &["rev-parse", "--verify", "nonexistent-ref-xyz-abc"],
+            None,
+        )
+        .expect("git command should execute");
+        assert!(
+            !output.status.success(),
+            "rev-parse on nonexistent ref should fail"
+        );
+
+        let err = GitClosureError::CommandExitFailure {
+            command: "git",
+            status: output.status.to_string(),
+            stderr: truncate_stderr(&output.stderr),
+        };
+
+        let display = err.to_string();
+        assert!(
+            display.contains("nonexistent-ref")
+                || display.contains("fatal")
+                || display.contains("unknown"),
+            "error display must include stderr context, got: {display:?}"
+        );
     }
 }
