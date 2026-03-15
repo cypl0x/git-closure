@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, ExitStatus};
 
 use tempfile::TempDir;
 
@@ -97,26 +97,29 @@ impl Provider for GitCloneProvider {
             .to_str()
             .ok_or_else(|| GitClosureError::Parse("invalid checkout path".to_string()))?;
 
-        let status = Command::new("git")
-            .args([
+        let status = run_command_status(
+            "git",
+            &[
                 "clone",
                 "--depth",
                 "1",
                 "--no-tags",
                 &parsed.url,
                 checkout_str,
-            ])
-            .status()?;
+            ],
+        )?;
 
         if !status.success() {
-            return Err(GitClosureError::Parse(format!(
-                "git clone failed for source: {source}"
-            )));
+            return Err(GitClosureError::CommandExitFailure {
+                command: "git",
+                status: status.to_string(),
+            });
         }
 
         if let Some(reference) = parsed.reference {
-            let fetch_status = Command::new("git")
-                .args([
+            let fetch_status = run_command_status(
+                "git",
+                &[
                     "-C",
                     checkout_str,
                     "fetch",
@@ -124,23 +127,26 @@ impl Provider for GitCloneProvider {
                     "1",
                     "origin",
                     &reference,
-                ])
-                .status()?;
+                ],
+            )?;
 
             if !fetch_status.success() {
-                return Err(GitClosureError::Parse(format!(
-                    "git fetch failed for reference '{reference}'"
-                )));
+                return Err(GitClosureError::CommandExitFailure {
+                    command: "git",
+                    status: fetch_status.to_string(),
+                });
             }
 
-            let checkout_status = Command::new("git")
-                .args(["-C", checkout_str, "checkout", "--detach", "FETCH_HEAD"])
-                .status()?;
+            let checkout_status = run_command_status(
+                "git",
+                &["-C", checkout_str, "checkout", "--detach", "FETCH_HEAD"],
+            )?;
 
             if !checkout_status.success() {
-                return Err(GitClosureError::Parse(format!(
-                    "git checkout failed for reference '{reference}'"
-                )));
+                return Err(GitClosureError::CommandExitFailure {
+                    command: "git",
+                    status: checkout_status.to_string(),
+                });
             }
         }
 
@@ -153,9 +159,7 @@ pub struct NixProvider;
 impl Provider for NixProvider {
     fn fetch(&self, source: &str) -> Result<FetchedSource> {
         let normalized = source.strip_prefix("nix:").unwrap_or(source);
-        let output = Command::new("nix")
-            .args(["flake", "metadata", normalized, "--json"])
-            .output()?;
+        let output = run_command_output("nix", &["flake", "metadata", normalized, "--json"])?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -254,9 +258,28 @@ fn parse_nix_metadata_path(output: &[u8]) -> Result<PathBuf> {
     Ok(PathBuf::from(metadata.path))
 }
 
+fn run_command_status(command: &'static str, args: &[&str]) -> Result<ExitStatus> {
+    Command::new(command)
+        .args(args)
+        .status()
+        .map_err(|source| GitClosureError::CommandSpawnFailed { command, source })
+}
+
+fn run_command_output(command: &'static str, args: &[&str]) -> Result<std::process::Output> {
+    Command::new(command)
+        .args(args)
+        .output()
+        .map_err(|source| GitClosureError::CommandSpawnFailed { command, source })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{parse_git_source, parse_nix_metadata_path, split_repo_ref};
+    use super::{
+        parse_git_source, parse_nix_metadata_path, run_command_status, split_repo_ref,
+        GitCloneProvider, Provider,
+    };
+    use crate::error::GitClosureError;
+    use std::io::ErrorKind;
 
     #[test]
     fn split_repo_ref_parses_optional_reference() {
@@ -283,5 +306,35 @@ mod tests {
         let json = br#"{ "path": "/nix/store/abc123-source", "locked": { "rev": "deadbeef" } }"#;
         let path = parse_nix_metadata_path(json).expect("parse nix metadata JSON");
         assert_eq!(path, std::path::PathBuf::from("/nix/store/abc123-source"));
+    }
+
+    #[test]
+    fn missing_binary_maps_to_command_spawn_failed() {
+        let err = run_command_status("__nonexistent_binary_for_testing__", &[])
+            .expect_err("missing binary should produce spawn error");
+
+        match err {
+            GitClosureError::CommandSpawnFailed { command, source } => {
+                assert_eq!(command, "__nonexistent_binary_for_testing__");
+                assert_eq!(source.kind(), ErrorKind::NotFound);
+            }
+            other => panic!("expected CommandSpawnFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn git_clone_failure_maps_to_command_exit_failure() {
+        let provider = GitCloneProvider;
+        let err = match provider.fetch("::::") {
+            Ok(_) => panic!("invalid git source should fail clone"),
+            Err(err) => err,
+        };
+
+        match err {
+            GitClosureError::CommandExitFailure { command, .. } => {
+                assert_eq!(command, "git");
+            }
+            other => panic!("expected CommandExitFailure, got {other:?}"),
+        }
     }
 }

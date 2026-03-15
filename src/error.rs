@@ -28,4 +28,15 @@ pub enum GitClosureError {
     MissingHeader(&'static str),
     #[error("legacy format-hash header found; re-snapshot with current tool")]
     LegacyHeader,
+    #[error("command '{command}' failed to spawn: {source}")]
+    CommandSpawnFailed {
+        command: &'static str,
+        #[source]
+        source: io::Error,
+    },
+    #[error("command '{command}' exited with non-zero status: {status}")]
+    CommandExitFailure {
+        command: &'static str,
+        status: String,
+    },
 }
