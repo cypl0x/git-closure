@@ -994,7 +994,8 @@ mod tests {
         let err = verify_snapshot(&snapshot).expect_err("legacy format hash must be rejected");
         let message = format!("{err:#}");
         assert!(
-            message.contains("format-hash") || message.contains("snapshot-hash"),
+            (message.contains("format-hash") || message.contains("snapshot-hash"))
+                && message.contains("re-snapshot"),
             "error should mention legacy header migration: {message}"
         );
     }
