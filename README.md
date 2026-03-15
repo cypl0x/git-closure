@@ -64,7 +64,7 @@ Given any local directory or remote repository, `git-closure` produces a `.gcl` 
 ;; source:      /home/wap/dotfiles
 ;; commit:      9dcb002a3f7e2d1c8e5f6a9b0d1e2f3c4a5b6d7
 ;; file-count:  247
-;; format-hash: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+;; snapshot-hash: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 
 (
   (:file        "hosts/thinkpad/default.nix"
@@ -87,11 +87,24 @@ Given any local directory or remote repository, `git-closure` produces a `.gcl` 
 
 Each entry contains a metadata plist followed by the raw file content. The SHA-256 is computed on the **raw file bytes only** — not the metadata wrapper — so it can be verified independently with `sha256sum`.
 
-The `format-hash` header field is the SHA-256 of all file contents concatenated in lexicographic path order. This provides a single fingerprint for the entire snapshot:
+The `snapshot-hash` header field is the SHA-256 of canonical per-entry identity tuples in lexicographic path order. For each entry, hash:
+
+- `[path length as u64, big-endian 8 bytes]`
+- `[path as UTF-8 bytes]`
+- `[mode as UTF-8 bytes]`
+- `[0x00 null byte]`
+- `[file sha256 hex as UTF-8 bytes]`
+- `[0x00 null byte]`
+
+This is the canonical Layer 2 identity for the snapshot.
 
 ```bash
+# Historical note: this computes a payload-style hash over raw concatenated bytes,
+# not git-closure's canonical snapshot-hash.
 find . -type f | sort | xargs cat | sha256sum
 ```
+
+`payload_hash` remains a deferred optional field for workflows that need raw concatenated-byte identity.
 
 ---
 
@@ -317,7 +330,9 @@ A key design constraint: per-file hashes must be independently verifiable withou
 SHA-256 of the raw bytes of an individual file. Simple, stable, and independently verifiable with `sha256sum`. Says nothing about path or tree structure.
 
 **Layer 2 — Snapshot Hash**
-SHA-256 over the canonical representation of the entire represented state, including path, type, mode, content identity, and deterministic ordering. This is `git-closure`'s primary integrity identity.
+SHA-256 over canonical entry tuples in lexicographic path order. Each tuple is:
+`[path_len_u64_be][path_utf8][mode_utf8][0x00][file_sha256_hex_utf8][0x00]`.
+This is `git-closure`'s primary integrity identity (`snapshot-hash`).
 
 **Layer 3 — Git Tree Identity** *(optional)*
 The exact Git tree object identity for the represented state. Enables interoperability with native Git semantics. Adds complexity; not every user needs it.
@@ -441,7 +456,7 @@ A lightweight reference file might look like:
 ```
 ;; git-closure reference snapshot v0.1
 ;; source:  gh:owner/dotfiles@9dcb002a3f7e2d1c8e5f6a9b0d1e2f3c4a5b6d7
-;; format-hash: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+;; snapshot-hash: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 
 (
   (:file    "hosts/thinkpad/default.nix"
@@ -507,7 +522,7 @@ src/
     github.rs          — GitHub via gh CLI or REST API
     gitlab.rs          — GitLab via REST API
     codeberg.rs        — Codeberg via Gitea API
-  hash.rs              — SHA-256 primitives, format-hash computation
+  hash.rs              — SHA-256 primitives, snapshot-hash computation
   metadata.rs          — git log extraction, filesystem stat
 tests/
   integration/         — round-trip tests: build → materialize → verify
