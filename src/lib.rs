@@ -86,7 +86,7 @@ pub fn build_snapshot_with_options(
     let serialized = serialize_snapshot(&files, &snapshot_hash);
 
     if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)?;
+        fs::create_dir_all(parent).map_err(|err| io_error_with_path(err, parent))?;
     }
 
     let mut writer = fs::File::create(output).map_err(|err| io_error_with_path(err, output))?;
@@ -1214,6 +1214,29 @@ mod tests {
         assert!(
             msg.contains("output-dir") || msg.contains("blocked-parent"),
             "error message must contain output path context, got: {msg:?}"
+        );
+    }
+
+    #[test]
+    fn io_error_display_includes_build_output_path() {
+        let source = TempDir::new().expect("create source tempdir");
+        fs::write(source.path().join("ok.txt"), b"ok\n").expect("write source file");
+
+        let blocked_parent = source.path().join("blocked-parent");
+        fs::write(&blocked_parent, b"not a directory").expect("create blocking file");
+
+        let output = blocked_parent.join("child").join("snap.gcl");
+        let err = build_snapshot(source.path(), &output).expect_err("build should fail");
+
+        assert!(
+            matches!(err, GitClosureError::Io(_)),
+            "expected Io variant, got: {err:?}"
+        );
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("blocked-parent") || msg.contains("child"),
+            "error message must include failing output path context, got: {msg:?}"
         );
     }
 
