@@ -578,26 +578,38 @@ fn normalize_relative_path(path: &Path) -> Result<String> {
     Ok(components.join("/"))
 }
 
+/// Canonical snapshot hash input format:
+///
+/// For each file in lexicographic path order:
+///   [entry_type_len: u64 be] [entry_type: UTF-8]   ("regular" or "symlink")
+///   [path_len: u64 be]       [path: UTF-8]
+///
+/// For "regular" entries additionally:
+///   [mode_len: u64 be]       [mode: UTF-8]
+///   [sha256_len: u64 be]     [sha256_hex: UTF-8]
+///
+/// For "symlink" entries additionally:
+///   [target_len: u64 be]     [target: UTF-8]
 fn compute_snapshot_hash(files: &[SnapshotFile]) -> String {
     let mut hasher = Sha256::new();
     for file in files {
         if let Some(target) = &file.symlink_target {
-            hasher.update(file.path.as_bytes());
-            hasher.update([0x00]);
-            hasher.update(b"symlink");
-            hasher.update([0x00]);
-            hasher.update(target.as_bytes());
-            hasher.update([0x00]);
+            hash_length_prefixed(&mut hasher, b"symlink");
+            hash_length_prefixed(&mut hasher, file.path.as_bytes());
+            hash_length_prefixed(&mut hasher, target.as_bytes());
         } else {
-            hasher.update((file.path.len() as u64).to_be_bytes());
-            hasher.update(file.path.as_bytes());
-            hasher.update(file.mode.as_bytes());
-            hasher.update([0x00]);
-            hasher.update(file.sha256.as_bytes());
-            hasher.update([0x00]);
+            hash_length_prefixed(&mut hasher, b"regular");
+            hash_length_prefixed(&mut hasher, file.path.as_bytes());
+            hash_length_prefixed(&mut hasher, file.mode.as_bytes());
+            hash_length_prefixed(&mut hasher, file.sha256.as_bytes());
         }
     }
     format!("{:x}", hasher.finalize())
+}
+
+fn hash_length_prefixed(hasher: &mut Sha256, bytes: &[u8]) {
+    hasher.update((bytes.len() as u64).to_be_bytes());
+    hasher.update(bytes);
 }
 
 fn serialize_snapshot(files: &[SnapshotFile], snapshot_hash: &str) -> String {
@@ -987,7 +999,7 @@ fn lexical_normalize(path: &Path) -> Result<PathBuf> {
 mod tests {
     use super::{
         build_snapshot, build_snapshot_from_provider, build_snapshot_with_options,
-        materialize_snapshot, verify_snapshot, BuildOptions,
+        compute_snapshot_hash, materialize_snapshot, verify_snapshot, BuildOptions, SnapshotFile,
     };
     use crate::error::GitClosureError;
     use crate::providers::{FetchedSource, Provider};
@@ -1121,6 +1133,57 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn snapshot_hash_protocol_is_consistent_across_entry_types() {
+        let source = TempDir::new().expect("create source tempdir");
+        fs::write(source.path().join("regular.txt"), b"hello\n").expect("write regular file");
+        symlink("regular.txt", source.path().join("link")).expect("create symlink");
+
+        let snapshot = source.path().join("mixed.gcl");
+        build_snapshot(source.path(), &snapshot).expect("build mixed snapshot");
+
+        let hash = read_snapshot_hash(&snapshot);
+        assert_eq!(hash.len(), 64, "snapshot hash should be 64 hex chars");
+        assert!(
+            hash.chars().all(|c| c.is_ascii_hexdigit()),
+            "snapshot hash should be lowercase hex"
+        );
+
+        verify_snapshot(&snapshot).expect("verify should accept mixed entry types");
+    }
+
+    #[test]
+    fn snapshot_hash_uses_length_prefix_not_null_termination() {
+        let files = vec![
+            SnapshotFile {
+                path: "alpha.txt".to_string(),
+                sha256: "a".repeat(64),
+                mode: "644".to_string(),
+                size: 1,
+                encoding: None,
+                symlink_target: None,
+                content: vec![b'x'],
+            },
+            SnapshotFile {
+                path: "sym".to_string(),
+                sha256: String::new(),
+                mode: "120000".to_string(),
+                size: 0,
+                encoding: None,
+                symlink_target: Some("../target.txt".to_string()),
+                content: Vec::new(),
+            },
+        ];
+
+        let actual = compute_snapshot_hash(&files);
+        let expected = manual_snapshot_hash_with_length_prefix(&files);
+        assert_eq!(
+            actual, expected,
+            "snapshot hash must match documented length-prefixed protocol"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn collision_regression_same_path_different_mode() {
         let left = TempDir::new().expect("create left tempdir");
         let right = TempDir::new().expect("create right tempdir");
@@ -1208,12 +1271,14 @@ mod tests {
         let snapshot_hash = {
             use sha2::{Digest, Sha256};
             let mut hasher = Sha256::new();
+            hasher.update((b"regular".len() as u64).to_be_bytes());
+            hasher.update(b"regular");
             hasher.update(("../escape.txt".len() as u64).to_be_bytes());
             hasher.update(b"../escape.txt");
+            hasher.update((b"644".len() as u64).to_be_bytes());
             hasher.update(b"644");
-            hasher.update([0x00]);
+            hasher.update((digest.len() as u64).to_be_bytes());
             hasher.update(digest.as_bytes());
-            hasher.update([0x00]);
             format!("{:x}", hasher.finalize())
         };
 
@@ -1528,13 +1593,39 @@ mod tests {
         use sha2::{Digest, Sha256};
 
         let mut hasher = Sha256::new();
-        hasher.update(path.as_bytes());
-        hasher.update([0x00]);
+        hasher.update((b"symlink".len() as u64).to_be_bytes());
         hasher.update(b"symlink");
-        hasher.update([0x00]);
+        hasher.update((path.len() as u64).to_be_bytes());
+        hasher.update(path.as_bytes());
+        hasher.update((target.len() as u64).to_be_bytes());
         hasher.update(target.as_bytes());
-        hasher.update([0x00]);
         format!("{:x}", hasher.finalize())
+    }
+
+    fn manual_snapshot_hash_with_length_prefix(files: &[SnapshotFile]) -> String {
+        use sha2::{Digest, Sha256};
+
+        let mut hasher = Sha256::new();
+        for file in files {
+            if let Some(target) = &file.symlink_target {
+                update_length_prefixed(&mut hasher, b"symlink");
+                update_length_prefixed(&mut hasher, file.path.as_bytes());
+                update_length_prefixed(&mut hasher, target.as_bytes());
+            } else {
+                update_length_prefixed(&mut hasher, b"regular");
+                update_length_prefixed(&mut hasher, file.path.as_bytes());
+                update_length_prefixed(&mut hasher, file.mode.as_bytes());
+                update_length_prefixed(&mut hasher, file.sha256.as_bytes());
+            }
+        }
+
+        format!("{:x}", hasher.finalize())
+    }
+
+    fn update_length_prefixed(hasher: &mut sha2::Sha256, bytes: &[u8]) {
+        use sha2::Digest;
+        hasher.update((bytes.len() as u64).to_be_bytes());
+        hasher.update(bytes);
     }
 
     #[test]

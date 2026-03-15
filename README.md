@@ -87,14 +87,21 @@ Given any local directory or remote repository, `git-closure` produces a `.gcl` 
 
 Each entry contains a metadata plist followed by the raw file content. The SHA-256 is computed on the **raw file bytes only** — not the metadata wrapper — so it can be verified independently with `sha256sum`.
 
-The `snapshot-hash` header field is the SHA-256 of canonical per-entry identity tuples in lexicographic path order. For each entry, hash:
+The `snapshot-hash` header field is the SHA-256 of canonical per-entry identity tuples in lexicographic path order. Every variable-length field is length-prefixed as `u64` big-endian bytes.
 
-- `[path length as u64, big-endian 8 bytes]`
-- `[path as UTF-8 bytes]`
-- `[mode as UTF-8 bytes]`
-- `[0x00 null byte]`
-- `[file sha256 hex as UTF-8 bytes]`
-- `[0x00 null byte]`
+For each entry:
+
+- `[entry_type_len][entry_type_utf8]` where entry type is `"regular"` or `"symlink"`
+- `[path_len][path_utf8]`
+
+For regular entries:
+
+- `[mode_len][mode_utf8]`
+- `[sha256_len][sha256_hex_utf8]`
+
+For symlink entries:
+
+- `[target_len][target_utf8]`
 
 This is the canonical Layer 2 identity for the snapshot.
 
@@ -330,8 +337,8 @@ A key design constraint: per-file hashes must be independently verifiable withou
 SHA-256 of the raw bytes of an individual file. Simple, stable, and independently verifiable with `sha256sum`. Says nothing about path or tree structure.
 
 **Layer 2 — Snapshot Hash**
-SHA-256 over canonical entry tuples in lexicographic path order. Each tuple is:
-`[path_len_u64_be][path_utf8][mode_utf8][0x00][file_sha256_hex_utf8][0x00]`.
+SHA-256 over canonical, length-prefixed tuples in lexicographic path order with explicit entry type domain separation:
+`[entry_type_len][entry_type][path_len][path]` plus either `[mode_len][mode][sha256_len][sha256_hex]` (regular) or `[target_len][target]` (symlink).
 This is `git-closure`'s primary integrity identity (`snapshot-hash`).
 
 **Layer 3 — Git Tree Identity** *(optional)*
