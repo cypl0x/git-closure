@@ -25,7 +25,7 @@ struct SnapshotFile {
     content: Vec<u8>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct BuildOptions {
     pub include_untracked: bool,
     pub require_clean: bool,
@@ -34,15 +34,6 @@ pub struct BuildOptions {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifyReport {
     pub file_count: usize,
-}
-
-impl Default for BuildOptions {
-    fn default() -> Self {
-        Self {
-            include_untracked: false,
-            require_clean: false,
-        }
-    }
 }
 
 pub fn build_snapshot(source: &Path, output: &Path) -> Result<()> {
@@ -84,8 +75,8 @@ pub fn build_snapshot_with_options(
     let mut files = collect_files(&source, options)?;
     files.sort_by(|a, b| a.path.cmp(&b.path));
 
-    let format_hash = compute_format_hash(&files);
-    let serialized = serialize_snapshot(&files, &format_hash);
+    let snapshot_hash = compute_snapshot_hash(&files);
+    let serialized = serialize_snapshot(&files, &snapshot_hash);
 
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)
@@ -107,11 +98,11 @@ pub fn materialize_snapshot(snapshot: &Path, output: &Path) -> Result<()> {
 
     let (header, files) = parse_snapshot(&text)?;
 
-    let recomputed = compute_format_hash(&files);
-    if recomputed != header.format_hash {
+    let recomputed = compute_snapshot_hash(&files);
+    if recomputed != header.snapshot_hash {
         bail!(
-            "format hash mismatch: expected {}, got {}",
-            header.format_hash,
+            "snapshot hash mismatch: expected {}, got {}",
+            header.snapshot_hash,
             recomputed
         );
     }
@@ -169,11 +160,11 @@ pub fn verify_snapshot(snapshot: &Path) -> Result<VerifyReport> {
 
     let (header, files) = parse_snapshot(&text)?;
 
-    let recomputed = compute_format_hash(&files);
-    if recomputed != header.format_hash {
+    let recomputed = compute_snapshot_hash(&files);
+    if recomputed != header.snapshot_hash {
         bail!(
-            "format hash mismatch: expected {}, got {}",
-            header.format_hash,
+            "snapshot hash mismatch: expected {}, got {}",
+            header.snapshot_hash,
             recomputed
         );
     }
@@ -295,7 +286,7 @@ fn collect_files_from_git_repo(
         }
 
         let relative = absolute
-            .strip_prefix(&context.workdir.join(&context.source_prefix))
+            .strip_prefix(context.workdir.join(&context.source_prefix))
             .with_context(|| {
                 format!(
                     "failed to create source-relative path for git entry: {}",
@@ -505,19 +496,24 @@ fn normalize_relative_path(path: &Path) -> Result<String> {
     Ok(components.join("/"))
 }
 
-fn compute_format_hash(files: &[SnapshotFile]) -> String {
+fn compute_snapshot_hash(files: &[SnapshotFile]) -> String {
     let mut hasher = Sha256::new();
     for file in files {
-        hasher.update(&file.content);
+        hasher.update((file.path.len() as u64).to_be_bytes());
+        hasher.update(file.path.as_bytes());
+        hasher.update(file.mode.as_bytes());
+        hasher.update([0x00]);
+        hasher.update(file.sha256.as_bytes());
+        hasher.update([0x00]);
     }
     format!("{:x}", hasher.finalize())
 }
 
-fn serialize_snapshot(files: &[SnapshotFile], format_hash: &str) -> String {
+fn serialize_snapshot(files: &[SnapshotFile], snapshot_hash: &str) -> String {
     let mut output = String::new();
 
     output.push_str(";; git-closure snapshot v0.1\n");
-    output.push_str(&format!(";; format-hash: {}\n", format_hash));
+    output.push_str(&format!(";; snapshot-hash: {}\n", snapshot_hash));
     output.push_str(&format!(";; file-count: {}\n", files.len()));
     output.push('\n');
     output.push_str("(\n");
@@ -526,17 +522,17 @@ fn serialize_snapshot(files: &[SnapshotFile], format_hash: &str) -> String {
         output.push_str("  (\n");
         output.push_str("    (:path ");
         output.push_str(&quote_string(&file.path));
-        output.push_str("\n");
+        output.push('\n');
         output.push_str("     :sha256 ");
         output.push_str(&quote_string(&file.sha256));
-        output.push_str("\n");
+        output.push('\n');
         output.push_str("     :mode ");
         output.push_str(&quote_string(&file.mode));
-        output.push_str("\n");
+        output.push('\n');
         output.push_str("     :size ");
         output.push_str(&file.size.to_string());
         if let Some(encoding) = &file.encoding {
-            output.push_str("\n");
+            output.push('\n');
             output.push_str("     :encoding ");
             output.push_str(&quote_string(encoding));
         }
@@ -549,7 +545,7 @@ fn serialize_snapshot(files: &[SnapshotFile], format_hash: &str) -> String {
         };
 
         output.push_str(&quote_string(&content_string));
-        output.push_str("\n");
+        output.push('\n');
         output.push_str("  )\n");
     }
 
@@ -559,7 +555,7 @@ fn serialize_snapshot(files: &[SnapshotFile], format_hash: &str) -> String {
 
 #[derive(Debug)]
 struct SnapshotHeader {
-    format_hash: String,
+    snapshot_hash: String,
     file_count: usize,
 }
 
@@ -580,7 +576,7 @@ fn parse_snapshot(input: &str) -> Result<(SnapshotHeader, Vec<SnapshotFile>)> {
 }
 
 fn split_header_body(input: &str) -> Result<(SnapshotHeader, &str)> {
-    let mut format_hash = None;
+    let mut snapshot_hash = None;
     let mut file_count = None;
     let mut body_start = None;
     let mut cursor = 0usize;
@@ -588,8 +584,11 @@ fn split_header_body(input: &str) -> Result<(SnapshotHeader, &str)> {
     for line in input.lines() {
         let line_len = line.len();
         if line.starts_with(";;") {
-            if let Some(value) = line.strip_prefix(";; format-hash:") {
-                format_hash = Some(value.trim().to_string());
+            if line.strip_prefix(";; format-hash:").is_some() {
+                bail!("legacy format-hash header found; re-snapshot with current tool");
+            }
+            if let Some(value) = line.strip_prefix(";; snapshot-hash:") {
+                snapshot_hash = Some(value.trim().to_string());
             }
             if let Some(value) = line.strip_prefix(";; file-count:") {
                 file_count = Some(
@@ -612,7 +611,7 @@ fn split_header_body(input: &str) -> Result<(SnapshotHeader, &str)> {
         break;
     }
 
-    let format_hash = format_hash.ok_or_else(|| anyhow!("missing format-hash header"))?;
+    let snapshot_hash = snapshot_hash.ok_or_else(|| anyhow!("missing snapshot-hash header"))?;
     let file_count = file_count.ok_or_else(|| anyhow!("missing file-count header"))?;
     let body_start = body_start.ok_or_else(|| anyhow!("missing S-expression body"))?;
 
@@ -620,7 +619,7 @@ fn split_header_body(input: &str) -> Result<(SnapshotHeader, &str)> {
 
     Ok((
         SnapshotHeader {
-            format_hash,
+            snapshot_hash,
             file_count,
         },
         body,
@@ -879,7 +878,7 @@ mod tests {
         };
 
         let snapshot_text = format!(
-            ";; git-closure snapshot v0.1\n;; format-hash: {digest}\n;; file-count: 1\n\n(\n  ((:path \"../escape.txt\" :sha256 \"{digest}\" :mode \"644\" :size 1) \"x\")\n)\n"
+            ";; git-closure snapshot v0.1\n;; snapshot-hash: {digest}\n;; file-count: 1\n\n(\n  ((:path \"../escape.txt\" :sha256 \"{digest}\" :mode \"644\" :size 1) \"x\")\n)\n"
         );
         fs::write(&snapshot, snapshot_text).expect("write malicious snapshot");
 
@@ -912,12 +911,114 @@ mod tests {
         };
 
         let snapshot_text = format!(
-            ";; git-closure snapshot v0.1\n;; format-hash: deadbeef\n;; file-count: 1\n\n(\n  ((:path \"x.txt\" :sha256 \"{digest}\" :mode \"644\" :size 1) \"x\")\n)\n"
+            ";; git-closure snapshot v0.1\n;; snapshot-hash: deadbeef\n;; file-count: 1\n\n(\n  ((:path \"x.txt\" :sha256 \"{digest}\" :mode \"644\" :size 1) \"x\")\n)\n"
         );
         fs::write(&snapshot, snapshot_text).expect("write invalid snapshot");
 
         let result = verify_snapshot(&snapshot);
         assert!(result.is_err(), "verify should reject bad format hash");
+    }
+
+    #[test]
+    fn snapshot_hash_differs_for_same_content_different_paths() {
+        let left = TempDir::new().expect("create left tempdir");
+        let right = TempDir::new().expect("create right tempdir");
+
+        fs::write(left.path().join("a.txt"), b"same\n").expect("write left file");
+        fs::write(right.path().join("b.txt"), b"same\n").expect("write right file");
+
+        let left_snapshot = left.path().join("left.gcl");
+        let right_snapshot = right.path().join("right.gcl");
+
+        build_snapshot(left.path(), &left_snapshot).expect("build left snapshot");
+        build_snapshot(right.path(), &right_snapshot).expect("build right snapshot");
+
+        let left_hash = read_snapshot_hash(&left_snapshot);
+        let right_hash = read_snapshot_hash(&right_snapshot);
+
+        assert_ne!(
+            left_hash, right_hash,
+            "snapshot hash must differ when path differs"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_hash_differs_for_same_path_different_modes() {
+        let left = TempDir::new().expect("create left tempdir");
+        let right = TempDir::new().expect("create right tempdir");
+
+        let left_file = left.path().join("run.sh");
+        let right_file = right.path().join("run.sh");
+
+        fs::write(&left_file, b"echo hi\n").expect("write left file");
+        fs::write(&right_file, b"echo hi\n").expect("write right file");
+
+        fs::set_permissions(&left_file, fs::Permissions::from_mode(0o644))
+            .expect("set left permissions");
+        fs::set_permissions(&right_file, fs::Permissions::from_mode(0o755))
+            .expect("set right permissions");
+
+        let left_snapshot = left.path().join("left.gcl");
+        let right_snapshot = right.path().join("right.gcl");
+
+        build_snapshot(left.path(), &left_snapshot).expect("build left snapshot");
+        build_snapshot(right.path(), &right_snapshot).expect("build right snapshot");
+
+        let left_hash = read_snapshot_hash(&left_snapshot);
+        let right_hash = read_snapshot_hash(&right_snapshot);
+
+        assert_ne!(
+            left_hash, right_hash,
+            "snapshot hash must differ when mode differs"
+        );
+    }
+
+    #[test]
+    fn verify_rejects_legacy_format_hash_header() {
+        let temp = TempDir::new().expect("create tempdir");
+        let snapshot = temp.path().join("legacy.gcl");
+
+        let digest = {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(b"x");
+            format!("{:x}", hasher.finalize())
+        };
+
+        let snapshot_text = format!(
+            ";; git-closure snapshot v0.1\n;; format-hash: deadbeef\n;; file-count: 1\n\n(\n  ((:path \"x.txt\" :sha256 \"{digest}\" :mode \"644\" :size 1) \"x\")\n)\n"
+        );
+        fs::write(&snapshot, snapshot_text).expect("write legacy snapshot");
+
+        let err = verify_snapshot(&snapshot).expect_err("legacy format hash must be rejected");
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("format-hash") || message.contains("snapshot-hash"),
+            "error should mention legacy header migration: {message}"
+        );
+    }
+
+    #[test]
+    fn build_is_byte_identical_for_same_directory() {
+        let source = TempDir::new().expect("create source tempdir");
+        let snapshots = TempDir::new().expect("create snapshot tempdir");
+        fs::write(source.path().join("a.txt"), b"alpha\n").expect("write a.txt");
+        fs::create_dir_all(source.path().join("bin")).expect("create bin directory");
+        let script = source.path().join("bin").join("run.sh");
+        fs::write(&script, b"#!/bin/sh\necho hi\n").expect("write script");
+
+        #[cfg(unix)]
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("set script mode");
+
+        let first = snapshots.path().join("first.gcl");
+        let second = snapshots.path().join("second.gcl");
+        build_snapshot(source.path(), &first).expect("build first snapshot");
+        build_snapshot(source.path(), &second).expect("build second snapshot");
+
+        let a = fs::read(first).expect("read first snapshot");
+        let b = fs::read(second).expect("read second snapshot");
+        assert_eq!(a, b, "snapshot output must be deterministic");
     }
 
     #[test]
@@ -1045,6 +1146,19 @@ mod tests {
             .status()
             .expect("failed to run git command");
         assert!(status.success(), "git command failed: git {:?}", args);
+    }
+
+    fn read_snapshot_hash(snapshot: &Path) -> String {
+        let text = fs::read_to_string(snapshot).expect("read snapshot text");
+        for line in text.lines() {
+            if let Some(value) = line.strip_prefix(";; snapshot-hash:") {
+                return value.trim().to_string();
+            }
+            if let Some(value) = line.strip_prefix(";; format-hash:") {
+                return value.trim().to_string();
+            }
+        }
+        panic!("missing snapshot hash header");
     }
 
     struct MockProvider {
