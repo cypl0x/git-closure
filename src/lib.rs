@@ -1,6 +1,7 @@
 use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
+use std::os::unix::fs::symlink;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
@@ -22,6 +23,7 @@ struct SnapshotFile {
     mode: String,
     size: u64,
     encoding: Option<String>,
+    symlink_target: Option<String>,
     content: Vec<u8>,
 }
 
@@ -131,6 +133,25 @@ pub fn materialize_snapshot(snapshot: &Path, output: &Path) -> Result<()> {
             })?;
         }
 
+        if let Some(target) = &file.symlink_target {
+            let target_path = Path::new(target);
+            if target_path.is_absolute() && !target_path.starts_with(&output_abs) {
+                bail!(
+                    "absolute symlink target escapes output directory for {}: {}",
+                    file.path,
+                    target
+                );
+            }
+            symlink(target_path, &destination).with_context(|| {
+                format!(
+                    "failed to materialize symlink {} -> {}",
+                    destination.display(),
+                    target
+                )
+            })?;
+            continue;
+        }
+
         let digest = sha256_hex(&file.content);
         if digest != file.sha256 {
             bail!(
@@ -171,6 +192,10 @@ pub fn verify_snapshot(snapshot: &Path) -> Result<VerifyReport> {
 
     for file in &files {
         let _ = sanitized_relative_path(&file.path)?;
+
+        if file.symlink_target.is_some() {
+            continue;
+        }
 
         let digest = sha256_hex(&file.content);
         if digest != file.sha256 {
@@ -276,12 +301,12 @@ fn collect_files_from_git_repo(
         }
 
         let absolute = context.workdir.join(&repo_relative);
-        let metadata = match fs::metadata(&absolute) {
+        let metadata = match fs::symlink_metadata(&absolute) {
             Ok(metadata) => metadata,
             Err(_) => continue,
         };
 
-        if !metadata.is_file() {
+        if !metadata.is_file() && !metadata.file_type().is_symlink() {
             continue;
         }
 
@@ -295,16 +320,37 @@ fn collect_files_from_git_repo(
             })?;
 
         let normalized = normalize_relative_path(relative)?;
-        let bytes = fs::read(&absolute)
-            .with_context(|| format!("failed to read file bytes: {}", absolute.display()))?;
-        let sha256 = sha256_hex(&bytes);
-        let mode = format!("{:o}", metadata.permissions().mode() & 0o777);
-        let size = bytes.len() as u64;
-        let encoding = if std::str::from_utf8(&bytes).is_ok() {
-            None
-        } else {
-            Some("base64".to_string())
-        };
+        let (sha256, mode, size, encoding, symlink_target, content) =
+            if metadata.file_type().is_symlink() {
+                let target = fs::read_link(&absolute).with_context(|| {
+                    format!("failed to read symlink target: {}", absolute.display())
+                })?;
+                let target = target
+                    .to_str()
+                    .ok_or_else(|| anyhow!("non-UTF-8 symlink target: {}", absolute.display()))?
+                    .to_string();
+                (
+                    String::new(),
+                    "120000".to_string(),
+                    0,
+                    None,
+                    Some(target),
+                    Vec::new(),
+                )
+            } else {
+                let bytes = fs::read(&absolute).with_context(|| {
+                    format!("failed to read file bytes: {}", absolute.display())
+                })?;
+                let sha256 = sha256_hex(&bytes);
+                let mode = format!("{:o}", metadata.permissions().mode() & 0o777);
+                let size = bytes.len() as u64;
+                let encoding = if std::str::from_utf8(&bytes).is_ok() {
+                    None
+                } else {
+                    Some("base64".to_string())
+                };
+                (sha256, mode, size, encoding, None, bytes)
+            };
 
         files.push(SnapshotFile {
             path: normalized,
@@ -312,7 +358,8 @@ fn collect_files_from_git_repo(
             mode,
             size,
             encoding,
-            content: bytes,
+            symlink_target,
+            content,
         });
     }
 
@@ -339,11 +386,10 @@ fn collect_files_from_ignore_walk(root: &Path) -> Result<Vec<SnapshotFile>> {
             continue;
         }
 
-        let metadata = entry
-            .metadata()
+        let metadata = fs::symlink_metadata(path)
             .with_context(|| format!("failed to read metadata for: {}", path.display()))?;
 
-        if !metadata.is_file() {
+        if !metadata.is_file() && !metadata.file_type().is_symlink() {
             continue;
         }
 
@@ -352,17 +398,38 @@ fn collect_files_from_ignore_walk(root: &Path) -> Result<Vec<SnapshotFile>> {
             .with_context(|| format!("failed to strip source prefix: {}", path.display()))?;
 
         let normalized = normalize_relative_path(relative)?;
-        let bytes = fs::read(path)
-            .with_context(|| format!("failed to read file bytes: {}", path.display()))?;
 
-        let sha256 = sha256_hex(&bytes);
-        let mode = format!("{:o}", metadata.permissions().mode() & 0o777);
-        let size = bytes.len() as u64;
-        let encoding = if std::str::from_utf8(&bytes).is_ok() {
-            None
-        } else {
-            Some("base64".to_string())
-        };
+        let (sha256, mode, size, encoding, symlink_target, content) =
+            if metadata.file_type().is_symlink() {
+                let target = fs::read_link(path).with_context(|| {
+                    format!("failed to read symlink target: {}", path.display())
+                })?;
+                let target = target
+                    .to_str()
+                    .ok_or_else(|| anyhow!("non-UTF-8 symlink target: {}", path.display()))?
+                    .to_string();
+                (
+                    String::new(),
+                    "120000".to_string(),
+                    0,
+                    None,
+                    Some(target),
+                    Vec::new(),
+                )
+            } else {
+                let bytes = fs::read(path)
+                    .with_context(|| format!("failed to read file bytes: {}", path.display()))?;
+
+                let sha256 = sha256_hex(&bytes);
+                let mode = format!("{:o}", metadata.permissions().mode() & 0o777);
+                let size = bytes.len() as u64;
+                let encoding = if std::str::from_utf8(&bytes).is_ok() {
+                    None
+                } else {
+                    Some("base64".to_string())
+                };
+                (sha256, mode, size, encoding, None, bytes)
+            };
 
         collected.push(SnapshotFile {
             path: normalized,
@@ -370,7 +437,8 @@ fn collect_files_from_ignore_walk(root: &Path) -> Result<Vec<SnapshotFile>> {
             mode,
             size,
             encoding,
-            content: bytes,
+            symlink_target,
+            content,
         });
     }
 
@@ -499,12 +567,21 @@ fn normalize_relative_path(path: &Path) -> Result<String> {
 fn compute_snapshot_hash(files: &[SnapshotFile]) -> String {
     let mut hasher = Sha256::new();
     for file in files {
-        hasher.update((file.path.len() as u64).to_be_bytes());
-        hasher.update(file.path.as_bytes());
-        hasher.update(file.mode.as_bytes());
-        hasher.update([0x00]);
-        hasher.update(file.sha256.as_bytes());
-        hasher.update([0x00]);
+        if let Some(target) = &file.symlink_target {
+            hasher.update(file.path.as_bytes());
+            hasher.update([0x00]);
+            hasher.update(b"symlink");
+            hasher.update([0x00]);
+            hasher.update(target.as_bytes());
+            hasher.update([0x00]);
+        } else {
+            hasher.update((file.path.len() as u64).to_be_bytes());
+            hasher.update(file.path.as_bytes());
+            hasher.update(file.mode.as_bytes());
+            hasher.update([0x00]);
+            hasher.update(file.sha256.as_bytes());
+            hasher.update([0x00]);
+        }
     }
     format!("{:x}", hasher.finalize())
 }
@@ -522,6 +599,17 @@ fn serialize_snapshot(files: &[SnapshotFile], snapshot_hash: &str) -> String {
         output.push_str("  (\n");
         output.push_str("    (:path ");
         output.push_str(&quote_string(&file.path));
+        if let Some(target) = &file.symlink_target {
+            output.push('\n');
+            output.push_str("     :type \"symlink\"");
+            output.push('\n');
+            output.push_str("     :target ");
+            output.push_str(&quote_string(target));
+            output.push_str(")\n");
+            output.push_str("\"\"\n");
+            output.push_str("  )\n");
+            continue;
+        }
         output.push('\n');
         output.push_str("     :sha256 ");
         output.push_str(&quote_string(&file.sha256));
@@ -654,6 +742,8 @@ fn parse_files_value(value: &lexpr::Value) -> Result<Vec<SnapshotFile>> {
         let mut mode = None;
         let mut size = None;
         let mut encoding = None;
+        let mut entry_type = None;
+        let mut target = None;
 
         if plist.len() % 2 != 0 {
             bail!("plist key/value pairs are malformed");
@@ -712,6 +802,22 @@ fn parse_files_value(value: &lexpr::Value) -> Result<Vec<SnapshotFile>> {
                             .to_string(),
                     );
                 }
+                "type" => {
+                    entry_type = Some(
+                        value
+                            .as_str()
+                            .ok_or_else(|| anyhow!(":type must be a string"))?
+                            .to_string(),
+                    );
+                }
+                "target" => {
+                    target = Some(
+                        value
+                            .as_str()
+                            .ok_or_else(|| anyhow!(":target must be a string"))?
+                            .to_string(),
+                    );
+                }
                 other => bail!("unknown metadata key: :{}", other),
             }
 
@@ -719,6 +825,20 @@ fn parse_files_value(value: &lexpr::Value) -> Result<Vec<SnapshotFile>> {
         }
 
         let path = path.ok_or_else(|| anyhow!("missing :path"))?;
+        if entry_type.as_deref() == Some("symlink") {
+            let target = target.ok_or_else(|| anyhow!("missing :target for symlink"))?;
+            files.push(SnapshotFile {
+                path,
+                sha256: String::new(),
+                mode: "120000".to_string(),
+                size: 0,
+                encoding: None,
+                symlink_target: Some(target),
+                content: Vec::new(),
+            });
+            continue;
+        }
+
         let sha256 = sha256.ok_or_else(|| anyhow!("missing :sha256"))?;
         let mode = mode.ok_or_else(|| anyhow!("missing :mode"))?;
         let size = size.ok_or_else(|| anyhow!("missing :size"))?;
@@ -746,6 +866,7 @@ fn parse_files_value(value: &lexpr::Value) -> Result<Vec<SnapshotFile>> {
             mode,
             size,
             encoding,
+            symlink_target: None,
             content,
         });
     }
@@ -823,6 +944,8 @@ mod tests {
 
     use tempfile::TempDir;
 
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
@@ -1022,6 +1145,76 @@ mod tests {
         assert_eq!(a, b, "snapshot output must be deterministic");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn symlink_survives_round_trip() {
+        let source = TempDir::new().expect("create source tempdir");
+        let restored = TempDir::new().expect("create restored tempdir");
+
+        fs::write(source.path().join("target.txt"), b"payload\n").expect("write target file");
+        symlink("target.txt", source.path().join("result")).expect("create source symlink");
+
+        let snapshot = source.path().join("snapshot.gcl");
+        build_snapshot(source.path(), &snapshot).expect("build snapshot");
+        materialize_snapshot(&snapshot, restored.path()).expect("materialize snapshot");
+
+        let restored_link = restored.path().join("result");
+        assert!(
+            restored_link.exists(),
+            "materialized symlink path should exist"
+        );
+        let target = fs::read_link(&restored_link).expect("read materialized symlink target");
+        assert_eq!(target, std::path::PathBuf::from("target.txt"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_target_changes_snapshot_hash() {
+        let left = TempDir::new().expect("create left tempdir");
+        let right = TempDir::new().expect("create right tempdir");
+
+        symlink("one.txt", left.path().join("result")).expect("create left symlink");
+        symlink("two.txt", right.path().join("result")).expect("create right symlink");
+
+        let left_snapshot = left.path().join("left.gcl");
+        let right_snapshot = right.path().join("right.gcl");
+
+        build_snapshot(left.path(), &left_snapshot).expect("build left snapshot");
+        build_snapshot(right.path(), &right_snapshot).expect("build right snapshot");
+
+        let left_hash = read_snapshot_hash(&left_snapshot);
+        let right_hash = read_snapshot_hash(&right_snapshot);
+        assert_ne!(
+            left_hash, right_hash,
+            "symlink target must affect snapshot hash"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn materialize_rejects_absolute_symlink_target_outside_output() {
+        let temp = TempDir::new().expect("create tempdir");
+        let snapshot = temp.path().join("escape.gcl");
+        let output = temp.path().join("out");
+
+        let path = "result";
+        let target = "/etc/passwd";
+        let snapshot_hash = symlink_snapshot_hash(path, target);
+
+        let snapshot_text = format!(
+            ";; git-closure snapshot v0.1\n;; snapshot-hash: {snapshot_hash}\n;; file-count: 1\n\n(\n  ((:path \"{path}\" :type \"symlink\" :target \"{target}\") \"\")\n)\n"
+        );
+        fs::write(&snapshot, snapshot_text).expect("write symlink snapshot");
+
+        let err = materialize_snapshot(&snapshot, &output)
+            .expect_err("absolute symlink target outside output must fail");
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("absolute") && message.contains("symlink"),
+            "error should explain unsafe absolute symlink target: {message}"
+        );
+    }
+
     #[test]
     fn remote_build_round_trip_with_mock_provider() {
         let fixture = TempDir::new().expect("create fixture tempdir");
@@ -1160,6 +1353,20 @@ mod tests {
             }
         }
         panic!("missing snapshot hash header");
+    }
+
+    #[cfg(unix)]
+    fn symlink_snapshot_hash(path: &str, target: &str) -> String {
+        use sha2::{Digest, Sha256};
+
+        let mut hasher = Sha256::new();
+        hasher.update(path.as_bytes());
+        hasher.update([0x00]);
+        hasher.update(b"symlink");
+        hasher.update([0x00]);
+        hasher.update(target.as_bytes());
+        hasher.update([0x00]);
+        format!("{:x}", hasher.finalize())
     }
 
     struct MockProvider {
