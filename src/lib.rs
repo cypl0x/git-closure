@@ -699,9 +699,7 @@ fn split_header_body(input: &str) -> Result<(SnapshotHeader, &str)> {
         let line_len = line.len();
         if line.starts_with(";;") {
             if line.strip_prefix(";; format-hash:").is_some() {
-                return Err(GitClosureError::LegacyHeader(
-                    "legacy format-hash header found; re-snapshot with current tool".to_string(),
-                ));
+                return Err(GitClosureError::LegacyHeader);
             }
             if let Some(value) = line.strip_prefix(";; snapshot-hash:") {
                 snapshot_hash = Some(value.trim().to_string());
@@ -1251,7 +1249,7 @@ mod tests {
         .expect("write legacy snapshot");
 
         let err = verify_snapshot(&snapshot).expect_err("legacy header should fail");
-        assert!(matches!(err, GitClosureError::LegacyHeader(_)));
+        assert!(matches!(err, GitClosureError::LegacyHeader));
     }
 
     #[test]

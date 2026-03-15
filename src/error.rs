@@ -27,7 +27,7 @@ pub enum GitClosureError {
     #[error("missing required header: {0}")]
     MissingHeader(&'static str),
     #[error("legacy format-hash header found; re-snapshot with current tool")]
-    LegacyHeader(String),
+    LegacyHeader,
 }
 
 impl From<anyhow::Error> for GitClosureError {
