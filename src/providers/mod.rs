@@ -2,8 +2,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{anyhow, bail, Context, Result};
 use tempfile::TempDir;
+
+use crate::error::GitClosureError;
+
+type Result<T> = std::result::Result<T, GitClosureError>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderKind {
@@ -74,10 +77,11 @@ impl Provider for LocalProvider {
     fn fetch(&self, source: &str) -> Result<FetchedSource> {
         let path = Path::new(source);
         if !path.exists() {
-            bail!("local source path does not exist: {source}");
+            return Err(GitClosureError::Parse(format!(
+                "local source path does not exist: {source}"
+            )));
         }
-        let absolute = fs::canonicalize(path)
-            .with_context(|| format!("failed to canonicalize local source: {source}"))?;
+        let absolute = fs::canonicalize(path)?;
         Ok(FetchedSource::local(absolute))
     }
 }
@@ -87,8 +91,11 @@ pub struct GitCloneProvider;
 impl Provider for GitCloneProvider {
     fn fetch(&self, source: &str) -> Result<FetchedSource> {
         let parsed = parse_git_source(source)?;
-        let tempdir = TempDir::new().context("failed to create temporary directory")?;
+        let tempdir = TempDir::new()?;
         let checkout = tempdir.path().join("repo");
+        let checkout_str = checkout
+            .to_str()
+            .ok_or_else(|| GitClosureError::Parse("invalid checkout path".to_string()))?;
 
         let status = Command::new("git")
             .args([
@@ -97,52 +104,43 @@ impl Provider for GitCloneProvider {
                 "1",
                 "--no-tags",
                 &parsed.url,
-                checkout
-                    .to_str()
-                    .ok_or_else(|| anyhow!("invalid checkout path"))?,
+                checkout_str,
             ])
-            .status()
-            .context("failed to execute git clone")?;
+            .status()?;
 
         if !status.success() {
-            bail!("git clone failed for source: {source}");
+            return Err(GitClosureError::Parse(format!(
+                "git clone failed for source: {source}"
+            )));
         }
 
         if let Some(reference) = parsed.reference {
             let fetch_status = Command::new("git")
                 .args([
                     "-C",
-                    checkout
-                        .to_str()
-                        .ok_or_else(|| anyhow!("invalid checkout path"))?,
+                    checkout_str,
                     "fetch",
                     "--depth",
                     "1",
                     "origin",
                     &reference,
                 ])
-                .status()
-                .context("failed to execute git fetch for reference")?;
+                .status()?;
 
             if !fetch_status.success() {
-                bail!("git fetch failed for reference '{reference}'");
+                return Err(GitClosureError::Parse(format!(
+                    "git fetch failed for reference '{reference}'"
+                )));
             }
 
             let checkout_status = Command::new("git")
-                .args([
-                    "-C",
-                    checkout
-                        .to_str()
-                        .ok_or_else(|| anyhow!("invalid checkout path"))?,
-                    "checkout",
-                    "--detach",
-                    "FETCH_HEAD",
-                ])
-                .status()
-                .context("failed to checkout fetched reference")?;
+                .args(["-C", checkout_str, "checkout", "--detach", "FETCH_HEAD"])
+                .status()?;
 
             if !checkout_status.success() {
-                bail!("git checkout failed for reference '{reference}'");
+                return Err(GitClosureError::Parse(format!(
+                    "git checkout failed for reference '{reference}'"
+                )));
             }
         }
 
@@ -157,20 +155,21 @@ impl Provider for NixProvider {
         let normalized = source.strip_prefix("nix:").unwrap_or(source);
         let output = Command::new("nix")
             .args(["flake", "metadata", normalized, "--json"])
-            .output()
-            .context("failed to execute nix flake metadata")?;
+            .output()?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!("nix flake metadata failed: {stderr}");
+            return Err(GitClosureError::Parse(format!(
+                "nix flake metadata failed: {stderr}"
+            )));
         }
 
         let path = parse_nix_metadata_path(&output.stdout)?;
         if !path.is_dir() {
-            bail!(
+            return Err(GitClosureError::Parse(format!(
                 "nix flake metadata path is not a directory: {}",
                 path.display()
-            );
+            )));
         }
 
         Ok(FetchedSource::local(path))
@@ -249,8 +248,9 @@ fn looks_like_nix_flake_ref(source: &str) -> bool {
 }
 
 fn parse_nix_metadata_path(output: &[u8]) -> Result<PathBuf> {
-    let metadata: NixFlakeMetadata =
-        serde_json::from_slice(output).context("failed to parse nix flake metadata JSON")?;
+    let metadata: NixFlakeMetadata = serde_json::from_slice(output).map_err(|err| {
+        GitClosureError::Parse(format!("failed to parse nix flake metadata JSON: {err}"))
+    })?;
     Ok(PathBuf::from(metadata.path))
 }
 

@@ -6,7 +6,6 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{anyhow, Context};
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use ignore::WalkBuilder;
@@ -71,8 +70,7 @@ pub fn build_snapshot_with_options(
     output: &Path,
     options: &BuildOptions,
 ) -> Result<()> {
-    let source = fs::canonicalize(source)
-        .with_context(|| format!("failed to canonicalize source path: {}", source.display()))?;
+    let source = fs::canonicalize(source)?;
 
     if !source.is_dir() {
         return Err(GitClosureError::Parse(format!(
@@ -88,22 +86,17 @@ pub fn build_snapshot_with_options(
     let serialized = serialize_snapshot(&files, &snapshot_hash);
 
     if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create parent directory: {}", parent.display()))?;
+        fs::create_dir_all(parent)?;
     }
 
-    let mut writer = fs::File::create(output)
-        .with_context(|| format!("failed to create output file: {}", output.display()))?;
-    writer
-        .write_all(serialized.as_bytes())
-        .with_context(|| format!("failed to write output file: {}", output.display()))?;
+    let mut writer = fs::File::create(output)?;
+    writer.write_all(serialized.as_bytes())?;
 
     Ok(())
 }
 
 pub fn materialize_snapshot(snapshot: &Path, output: &Path) -> Result<()> {
-    let text = fs::read_to_string(snapshot)
-        .with_context(|| format!("failed to read snapshot: {}", snapshot.display()))?;
+    let text = fs::read_to_string(snapshot)?;
 
     let (header, files) = parse_snapshot(&text)?;
 
@@ -115,15 +108,9 @@ pub fn materialize_snapshot(snapshot: &Path, output: &Path) -> Result<()> {
         });
     }
 
-    fs::create_dir_all(output)
-        .with_context(|| format!("failed to create output directory: {}", output.display()))?;
+    fs::create_dir_all(output)?;
 
-    let output_abs = fs::canonicalize(output).with_context(|| {
-        format!(
-            "failed to canonicalize output directory: {}",
-            output.display()
-        )
-    })?;
+    let output_abs = fs::canonicalize(output)?;
 
     for file in files {
         let relative = sanitized_relative_path(&file.path)?;
@@ -134,9 +121,7 @@ pub fn materialize_snapshot(snapshot: &Path, output: &Path) -> Result<()> {
         }
 
         if let Some(parent) = destination.parent() {
-            fs::create_dir_all(parent).with_context(|| {
-                format!("failed to create parent directory: {}", parent.display())
-            })?;
+            fs::create_dir_all(parent)?;
         }
 
         if let Some(target) = &file.symlink_target {
@@ -156,13 +141,7 @@ pub fn materialize_snapshot(snapshot: &Path, output: &Path) -> Result<()> {
                     file.path, target
                 )));
             }
-            symlink(target_path, &destination).with_context(|| {
-                format!(
-                    "failed to materialize symlink {} -> {}",
-                    destination.display(),
-                    target
-                )
-            })?;
+            symlink(target_path, &destination)?;
             continue;
         }
 
@@ -175,22 +154,23 @@ pub fn materialize_snapshot(snapshot: &Path, output: &Path) -> Result<()> {
             });
         }
 
-        fs::write(&destination, &file.content)
-            .with_context(|| format!("failed to write file: {}", destination.display()))?;
+        fs::write(&destination, &file.content)?;
 
-        let mode = u32::from_str_radix(&file.mode, 8)
-            .with_context(|| format!("invalid octal mode for {}: {}", file.path, file.mode))?;
+        let mode = u32::from_str_radix(&file.mode, 8).map_err(|err| {
+            GitClosureError::Parse(format!(
+                "invalid octal mode for {}: {} ({err})",
+                file.path, file.mode
+            ))
+        })?;
         let permissions = fs::Permissions::from_mode(mode);
-        fs::set_permissions(&destination, permissions)
-            .with_context(|| format!("failed to set permissions: {}", destination.display()))?;
+        fs::set_permissions(&destination, permissions)?;
     }
 
     Ok(())
 }
 
 pub fn verify_snapshot(snapshot: &Path) -> Result<VerifyReport> {
-    let text = fs::read_to_string(snapshot)
-        .with_context(|| format!("failed to read snapshot: {}", snapshot.display()))?;
+    let text = fs::read_to_string(snapshot)?;
 
     let (header, files) = parse_snapshot(&text)?;
 
@@ -226,8 +206,12 @@ pub fn verify_snapshot(snapshot: &Path) -> Result<VerifyReport> {
             });
         }
 
-        u32::from_str_radix(&file.mode, 8)
-            .with_context(|| format!("invalid octal mode for {}: {}", file.path, file.mode))?;
+        u32::from_str_radix(&file.mode, 8).map_err(|err| {
+            GitClosureError::Parse(format!(
+                "invalid octal mode for {}: {} ({err})",
+                file.path, file.mode
+            ))
+        })?;
     }
 
     Ok(VerifyReport {
@@ -261,7 +245,9 @@ impl GitRepoContext {
         };
 
         let workdir = String::from_utf8(output.stdout)
-            .context("git returned non-UTF-8 repository root")?
+            .map_err(|err| {
+                GitClosureError::Parse(format!("git returned non-UTF-8 repository root: {err}"))
+            })?
             .trim()
             .to_string();
         let workdir = PathBuf::from(workdir);
@@ -272,11 +258,11 @@ impl GitRepoContext {
 
         let source_prefix = source
             .strip_prefix(&workdir)
-            .with_context(|| {
-                format!(
-                    "failed to determine source prefix under git workdir: {}",
-                    source.display()
-                )
+            .map_err(|err| {
+                GitClosureError::Parse(format!(
+                    "failed to determine source prefix under git workdir: {} ({err})",
+                    source.display(),
+                ))
             })?
             .to_path_buf();
 
@@ -322,22 +308,25 @@ fn collect_files_from_git_repo(
 
         let relative = absolute
             .strip_prefix(context.workdir.join(&context.source_prefix))
-            .with_context(|| {
-                format!(
-                    "failed to create source-relative path for git entry: {}",
-                    absolute.display()
-                )
+            .map_err(|err| {
+                GitClosureError::Parse(format!(
+                    "failed to create source-relative path for git entry: {} ({err})",
+                    absolute.display(),
+                ))
             })?;
 
         let normalized = normalize_relative_path(relative)?;
         let (sha256, mode, size, encoding, symlink_target, content) =
             if metadata.file_type().is_symlink() {
-                let target = fs::read_link(&absolute).with_context(|| {
-                    format!("failed to read symlink target: {}", absolute.display())
-                })?;
+                let target = fs::read_link(&absolute)?;
                 let target = target
                     .to_str()
-                    .ok_or_else(|| anyhow!("non-UTF-8 symlink target: {}", absolute.display()))?
+                    .ok_or_else(|| {
+                        GitClosureError::Parse(format!(
+                            "non-UTF-8 symlink target: {}",
+                            absolute.display()
+                        ))
+                    })?
                     .to_string();
                 (
                     String::new(),
@@ -348,9 +337,7 @@ fn collect_files_from_git_repo(
                     Vec::new(),
                 )
             } else {
-                let bytes = fs::read(&absolute).with_context(|| {
-                    format!("failed to read file bytes: {}", absolute.display())
-                })?;
+                let bytes = fs::read(&absolute)?;
                 let sha256 = sha256_hex(&bytes);
                 let mode = format!("{:o}", metadata.permissions().mode() & 0o777);
                 let size = bytes.len() as u64;
@@ -389,57 +376,62 @@ fn collect_files_from_ignore_walk(root: &Path) -> Result<Vec<SnapshotFile>> {
         .build();
 
     for entry in walker {
-        let entry = entry.context("failed to walk source directory")?;
+        let entry = entry.map_err(|err| {
+            GitClosureError::Parse(format!("failed to walk source directory: {err}"))
+        })?;
         let path = entry.path();
 
         if path == root {
             continue;
         }
 
-        let metadata = fs::symlink_metadata(path)
-            .with_context(|| format!("failed to read metadata for: {}", path.display()))?;
+        let metadata = fs::symlink_metadata(path)?;
 
         if !metadata.is_file() && !metadata.file_type().is_symlink() {
             continue;
         }
 
-        let relative = path
-            .strip_prefix(root)
-            .with_context(|| format!("failed to strip source prefix: {}", path.display()))?;
+        let relative = path.strip_prefix(root).map_err(|err| {
+            GitClosureError::Parse(format!(
+                "failed to strip source prefix: {} ({err})",
+                path.display()
+            ))
+        })?;
 
         let normalized = normalize_relative_path(relative)?;
 
-        let (sha256, mode, size, encoding, symlink_target, content) =
-            if metadata.file_type().is_symlink() {
-                let target = fs::read_link(path).with_context(|| {
-                    format!("failed to read symlink target: {}", path.display())
-                })?;
-                let target = target
-                    .to_str()
-                    .ok_or_else(|| anyhow!("non-UTF-8 symlink target: {}", path.display()))?
-                    .to_string();
-                (
-                    String::new(),
-                    "120000".to_string(),
-                    0,
-                    None,
-                    Some(target),
-                    Vec::new(),
-                )
-            } else {
-                let bytes = fs::read(path)
-                    .with_context(|| format!("failed to read file bytes: {}", path.display()))?;
+        let (sha256, mode, size, encoding, symlink_target, content) = if metadata
+            .file_type()
+            .is_symlink()
+        {
+            let target = fs::read_link(path)?;
+            let target = target
+                .to_str()
+                .ok_or_else(|| {
+                    GitClosureError::Parse(format!("non-UTF-8 symlink target: {}", path.display()))
+                })?
+                .to_string();
+            (
+                String::new(),
+                "120000".to_string(),
+                0,
+                None,
+                Some(target),
+                Vec::new(),
+            )
+        } else {
+            let bytes = fs::read(path)?;
 
-                let sha256 = sha256_hex(&bytes);
-                let mode = format!("{:o}", metadata.permissions().mode() & 0o777);
-                let size = bytes.len() as u64;
-                let encoding = if std::str::from_utf8(&bytes).is_ok() {
-                    None
-                } else {
-                    Some("base64".to_string())
-                };
-                (sha256, mode, size, encoding, None, bytes)
+            let sha256 = sha256_hex(&bytes);
+            let mode = format!("{:o}", metadata.permissions().mode() & 0o777);
+            let size = bytes.len() as u64;
+            let encoding = if std::str::from_utf8(&bytes).is_ok() {
+                None
+            } else {
+                Some("base64".to_string())
             };
+            (sha256, mode, size, encoding, None, bytes)
+        };
 
         collected.push(SnapshotFile {
             path: normalized,
@@ -467,8 +459,7 @@ fn ensure_git_source_is_clean(context: &GitRepoContext) -> Result<()> {
     let output = Command::new("git")
         .args(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
         .current_dir(&context.workdir)
-        .output()
-        .context("failed to run git status for clean check")?;
+        .output()?;
 
     if !output.status.success() {
         return Err(GitClosureError::Parse(
@@ -488,7 +479,9 @@ fn ensure_git_source_is_clean(context: &GitRepoContext) -> Result<()> {
 
         let path_bytes = &entry[3..];
         let path = std::str::from_utf8(path_bytes)
-            .context("git status produced non-UTF-8 path")?
+            .map_err(|err| {
+                GitClosureError::Parse(format!("git status produced non-UTF-8 path: {err}"))
+            })?
             .trim();
 
         let repo_relative = Path::new(path);
@@ -516,8 +509,7 @@ fn git_ls_files(context: &GitRepoContext, include_untracked: bool) -> Result<Vec
     let output = Command::new("git")
         .args(&args)
         .current_dir(&context.workdir)
-        .output()
-        .context("failed to run git ls-files")?;
+        .output()?;
 
     if !output.status.success() {
         return Err(GitClosureError::Parse("git ls-files failed".to_string()));
@@ -528,7 +520,9 @@ fn git_ls_files(context: &GitRepoContext, include_untracked: bool) -> Result<Vec
         if chunk.is_empty() {
             continue;
         }
-        let path = std::str::from_utf8(chunk).context("git ls-files produced non-UTF-8 path")?;
+        let path = std::str::from_utf8(chunk).map_err(|err| {
+            GitClosureError::Parse(format!("git ls-files produced non-UTF-8 path: {err}"))
+        })?;
         paths.push(PathBuf::from(path));
     }
 
@@ -556,7 +550,12 @@ fn normalize_relative_path(path: &Path) -> Result<String> {
                 }
                 components.push(
                     part.to_str()
-                        .ok_or_else(|| anyhow!("non-UTF-8 path component: {}", path.display()))?
+                        .ok_or_else(|| {
+                            GitClosureError::Parse(format!(
+                                "non-UTF-8 path component: {}",
+                                path.display()
+                            ))
+                        })?
                         .to_string(),
                 );
             }
@@ -675,7 +674,9 @@ struct SnapshotHeader {
 
 fn parse_snapshot(input: &str) -> Result<(SnapshotHeader, Vec<SnapshotFile>)> {
     let (header, body) = split_header_body(input)?;
-    let parsed = lexpr::from_str(body).context("failed to parse S-expression body")?;
+    let parsed = lexpr::from_str(body).map_err(|err| {
+        GitClosureError::Parse(format!("failed to parse S-expression body: {err}"))
+    })?;
     let files = parse_files_value(&parsed)?;
 
     if files.len() != header.file_count {
@@ -705,12 +706,9 @@ fn split_header_body(input: &str) -> Result<(SnapshotHeader, &str)> {
                 snapshot_hash = Some(value.trim().to_string());
             }
             if let Some(value) = line.strip_prefix(";; file-count:") {
-                file_count = Some(
-                    value
-                        .trim()
-                        .parse::<usize>()
-                        .context("invalid file-count header")?,
-                );
+                file_count = Some(value.trim().parse::<usize>().map_err(|err| {
+                    GitClosureError::Parse(format!("invalid file-count header: {err}"))
+                })?);
             }
             cursor += line_len + 1;
             continue;
@@ -743,14 +741,14 @@ fn split_header_body(input: &str) -> Result<(SnapshotHeader, &str)> {
 fn parse_files_value(value: &lexpr::Value) -> Result<Vec<SnapshotFile>> {
     let root = value
         .to_ref_vec()
-        .ok_or_else(|| anyhow!("snapshot body must be a list"))?;
+        .ok_or_else(|| GitClosureError::Parse("snapshot body must be a list".to_string()))?;
 
     let mut files = Vec::with_capacity(root.len());
 
     for entry in root {
-        let pair = entry
-            .to_ref_vec()
-            .ok_or_else(|| anyhow!("each entry must be a 2-item list"))?;
+        let pair = entry.to_ref_vec().ok_or_else(|| {
+            GitClosureError::Parse("each entry must be a 2-item list".to_string())
+        })?;
         if pair.len() != 2 {
             return Err(GitClosureError::Parse(
                 "each entry must contain plist and content".to_string(),
@@ -759,11 +757,11 @@ fn parse_files_value(value: &lexpr::Value) -> Result<Vec<SnapshotFile>> {
 
         let plist = pair[0]
             .to_ref_vec()
-            .ok_or_else(|| anyhow!("entry plist must be a list"))?;
+            .ok_or_else(|| GitClosureError::Parse("entry plist must be a list".to_string()))?;
 
         let content_field = pair[1]
             .as_str()
-            .ok_or_else(|| anyhow!("entry content must be a string"))?;
+            .ok_or_else(|| GitClosureError::Parse("entry content must be a string".to_string()))?;
 
         let mut path = None;
         let mut sha256 = None;
@@ -784,9 +782,9 @@ fn parse_files_value(value: &lexpr::Value) -> Result<Vec<SnapshotFile>> {
             let key = if let Some(keyword) = plist[idx].as_keyword() {
                 keyword
             } else if let Some(symbol) = plist[idx].as_symbol() {
-                symbol
-                    .strip_prefix(':')
-                    .ok_or_else(|| anyhow!("plist symbol keys must start with ':'"))?
+                symbol.strip_prefix(':').ok_or_else(|| {
+                    GitClosureError::Parse("plist symbol keys must start with ':'".to_string())
+                })?
             } else {
                 return Err(GitClosureError::Parse(
                     "plist keys must be keywords or :symbol values".to_string(),
@@ -799,7 +797,9 @@ fn parse_files_value(value: &lexpr::Value) -> Result<Vec<SnapshotFile>> {
                     path = Some(
                         value
                             .as_str()
-                            .ok_or_else(|| anyhow!(":path must be a string"))?
+                            .ok_or_else(|| {
+                                GitClosureError::Parse(":path must be a string".to_string())
+                            })?
                             .to_string(),
                     );
                 }
@@ -807,7 +807,9 @@ fn parse_files_value(value: &lexpr::Value) -> Result<Vec<SnapshotFile>> {
                     sha256 = Some(
                         value
                             .as_str()
-                            .ok_or_else(|| anyhow!(":sha256 must be a string"))?
+                            .ok_or_else(|| {
+                                GitClosureError::Parse(":sha256 must be a string".to_string())
+                            })?
                             .to_string(),
                     );
                 }
@@ -815,22 +817,24 @@ fn parse_files_value(value: &lexpr::Value) -> Result<Vec<SnapshotFile>> {
                     mode = Some(
                         value
                             .as_str()
-                            .ok_or_else(|| anyhow!(":mode must be a string"))?
+                            .ok_or_else(|| {
+                                GitClosureError::Parse(":mode must be a string".to_string())
+                            })?
                             .to_string(),
                     );
                 }
                 "size" => {
-                    size = Some(
-                        value
-                            .as_u64()
-                            .ok_or_else(|| anyhow!(":size must be a u64"))?,
-                    );
+                    size = Some(value.as_u64().ok_or_else(|| {
+                        GitClosureError::Parse(":size must be a u64".to_string())
+                    })?);
                 }
                 "encoding" => {
                     encoding = Some(
                         value
                             .as_str()
-                            .ok_or_else(|| anyhow!(":encoding must be a string"))?
+                            .ok_or_else(|| {
+                                GitClosureError::Parse(":encoding must be a string".to_string())
+                            })?
                             .to_string(),
                     );
                 }
@@ -838,7 +842,9 @@ fn parse_files_value(value: &lexpr::Value) -> Result<Vec<SnapshotFile>> {
                     entry_type = Some(
                         value
                             .as_str()
-                            .ok_or_else(|| anyhow!(":type must be a string"))?
+                            .ok_or_else(|| {
+                                GitClosureError::Parse(":type must be a string".to_string())
+                            })?
                             .to_string(),
                     );
                 }
@@ -846,7 +852,9 @@ fn parse_files_value(value: &lexpr::Value) -> Result<Vec<SnapshotFile>> {
                     target = Some(
                         value
                             .as_str()
-                            .ok_or_else(|| anyhow!(":target must be a string"))?
+                            .ok_or_else(|| {
+                                GitClosureError::Parse(":target must be a string".to_string())
+                            })?
                             .to_string(),
                     );
                 }
@@ -861,9 +869,10 @@ fn parse_files_value(value: &lexpr::Value) -> Result<Vec<SnapshotFile>> {
             idx += 2;
         }
 
-        let path = path.ok_or_else(|| anyhow!("missing :path"))?;
+        let path = path.ok_or_else(|| GitClosureError::Parse("missing :path".to_string()))?;
         if entry_type.as_deref() == Some("symlink") {
-            let target = target.ok_or_else(|| anyhow!("missing :target for symlink"))?;
+            let target = target
+                .ok_or_else(|| GitClosureError::Parse("missing :target for symlink".to_string()))?;
             files.push(SnapshotFile {
                 path,
                 sha256: String::new(),
@@ -876,14 +885,14 @@ fn parse_files_value(value: &lexpr::Value) -> Result<Vec<SnapshotFile>> {
             continue;
         }
 
-        let sha256 = sha256.ok_or_else(|| anyhow!("missing :sha256"))?;
-        let mode = mode.ok_or_else(|| anyhow!("missing :mode"))?;
-        let size = size.ok_or_else(|| anyhow!("missing :size"))?;
+        let sha256 = sha256.ok_or_else(|| GitClosureError::Parse("missing :sha256".to_string()))?;
+        let mode = mode.ok_or_else(|| GitClosureError::Parse("missing :mode".to_string()))?;
+        let size = size.ok_or_else(|| GitClosureError::Parse("missing :size".to_string()))?;
 
         let content = match encoding.as_deref() {
-            Some("base64") => BASE64_STANDARD
-                .decode(content_field)
-                .with_context(|| format!("invalid base64 content for {}", path))?,
+            Some("base64") => BASE64_STANDARD.decode(content_field).map_err(|err| {
+                GitClosureError::Parse(format!("invalid base64 content for {}: {err}", path))
+            })?,
             Some(other) => {
                 return Err(GitClosureError::Parse(format!(
                     "unsupported encoding for {}: {}",
@@ -1083,6 +1092,38 @@ mod tests {
 
         let report = verify_snapshot(&snapshot).expect("verify should pass");
         assert_eq!(report.file_count, 1);
+    }
+
+    #[test]
+    fn verify_missing_file_returns_io_error_variant() {
+        let path = Path::new("/nonexistent/path/snapshot.gcl");
+        let err = verify_snapshot(path).expect_err("verify should fail for missing file");
+        assert!(
+            matches!(err, GitClosureError::Io(_)),
+            "expected Io variant, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn materialize_missing_output_parent_returns_io_error_variant() {
+        let temp = TempDir::new().expect("create tempdir");
+        let snapshot = temp.path().join("empty.gcl");
+        let blocking_parent = temp.path().join("not-a-directory");
+        fs::write(&blocking_parent, b"file").expect("create blocking file");
+
+        fs::write(
+            &snapshot,
+            ";; git-closure snapshot v0.1\n;; snapshot-hash: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n;; file-count: 0\n\n()\n",
+        )
+        .expect("write empty snapshot");
+
+        let output = blocking_parent.join("child");
+        let err = materialize_snapshot(&snapshot, &output)
+            .expect_err("materialize should fail when output parent is not a directory");
+        assert!(
+            matches!(err, GitClosureError::Io(_)),
+            "expected Io variant, got: {err:?}"
+        );
     }
 
     #[test]
@@ -1700,9 +1741,11 @@ mod tests {
     }
 
     impl Provider for MockProvider {
-        fn fetch(&self, source: &str) -> anyhow::Result<FetchedSource> {
+        fn fetch(&self, source: &str) -> std::result::Result<FetchedSource, GitClosureError> {
             if source != "mock://example/repo" {
-                anyhow::bail!("unexpected mock source: {source}");
+                return Err(GitClosureError::Parse(format!(
+                    "unexpected mock source: {source}"
+                )));
             }
             Ok(FetchedSource::local(self.root.clone()))
         }

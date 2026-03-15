@@ -29,9 +29,3 @@ pub enum GitClosureError {
     #[error("legacy format-hash header found; re-snapshot with current tool")]
     LegacyHeader,
 }
-
-impl From<anyhow::Error> for GitClosureError {
-    fn from(value: anyhow::Error) -> Self {
-        GitClosureError::Parse(value.to_string())
-    }
-}
