@@ -113,6 +113,23 @@ pub fn materialize_snapshot(snapshot: &Path, output: &Path) -> Result<()> {
 
     let output_abs = fs::canonicalize(output).map_err(|err| io_error_with_path(err, output))?;
 
+    // Safety invariant: `materialize` writes a complete, deterministic tree.
+    // Materializing into a non-empty directory risks TOCTOU-style attacks where
+    // a pre-planted symlink under output_abs can redirect writes outside the
+    // sandbox (lexical containment check passes but fs traversal follows the
+    // symlink).  An empty-directory precondition eliminates this attack surface.
+    let is_empty = output_abs
+        .read_dir()
+        .map_err(|err| io_error_with_path(err, &output_abs))?
+        .next()
+        .is_none();
+    if !is_empty {
+        return Err(GitClosureError::Parse(format!(
+            "output directory must be empty: {}",
+            output_abs.display()
+        )));
+    }
+
     for file in files {
         let relative = sanitized_relative_path(&file.path)?;
         let destination = output_abs.join(relative);
@@ -122,7 +139,7 @@ pub fn materialize_snapshot(snapshot: &Path, output: &Path) -> Result<()> {
         }
 
         if let Some(parent) = destination.parent() {
-            fs::create_dir_all(parent)?;
+            fs::create_dir_all(parent).map_err(|err| io_error_with_path(err, parent))?;
         }
 
         if let Some(target) = &file.symlink_target {
@@ -155,7 +172,8 @@ pub fn materialize_snapshot(snapshot: &Path, output: &Path) -> Result<()> {
             });
         }
 
-        fs::write(&destination, &file.content)?;
+        fs::write(&destination, &file.content)
+            .map_err(|err| io_error_with_path(err, &destination))?;
 
         let mode = u32::from_str_radix(&file.mode, 8).map_err(|err| {
             GitClosureError::Parse(format!(
@@ -164,7 +182,8 @@ pub fn materialize_snapshot(snapshot: &Path, output: &Path) -> Result<()> {
             ))
         })?;
         let permissions = fs::Permissions::from_mode(mode);
-        fs::set_permissions(&destination, permissions)?;
+        fs::set_permissions(&destination, permissions)
+            .map_err(|err| io_error_with_path(err, &destination))?;
     }
 
     Ok(())
@@ -690,7 +709,13 @@ fn serialize_snapshot(files: &[SnapshotFile], snapshot_hash: &str) -> String {
         let content_string = if file.encoding.as_deref() == Some("base64") {
             BASE64_STANDARD.encode(&file.content)
         } else {
-            String::from_utf8_lossy(&file.content).to_string()
+            // INVARIANT: files without base64 encoding were validated as valid UTF-8
+            // during collection via `std::str::from_utf8` in collect_file_attributes.
+            // `from_utf8_lossy` would silently corrupt data by substituting U+FFFD —
+            // an undetectable data-loss bug.  Panic loudly instead so the invariant
+            // violation is surfaced immediately during development/testing.
+            String::from_utf8(file.content.clone())
+                .expect("non-base64 file content must be valid UTF-8 (invariant violated)")
         };
 
         output.push_str(&quote_string(&content_string));
@@ -895,10 +920,13 @@ fn parse_files_value(value: &lexpr::Value) -> Result<Vec<SnapshotFile>> {
                     );
                 }
                 other => {
-                    return Err(GitClosureError::Parse(format!(
-                        "unknown metadata key: :{}",
-                        other
-                    )));
+                    // Unknown keys are intentionally ignored for forward compatibility.
+                    // README: "unknown plist keys are silently ignored by any conformant reader."
+                    // A future version of git-closure may emit `:mtime`, `:git-object-id`, etc.
+                    // Rejecting them here would be a silent format-versioning break.
+                    let _ = other;
+                    idx += 2;
+                    continue;
                 }
             }
 
@@ -2218,5 +2246,164 @@ mod tests {
             }
             Ok(FetchedSource::local(self.root.clone()))
         }
+    }
+
+    // ── T-19: Forward compatibility — unknown plist keys ──────────────────────
+
+    /// A snapshot emitted by a *future* version of git-closure that adds a new
+    /// `:mtime` key must be accepted by the current parser.  The README promises
+    /// "unknown plist keys are silently ignored by any conformant reader."
+    #[test]
+    fn parse_snapshot_silently_ignores_unknown_plist_key() {
+        let source = TempDir::new().expect("create source tempdir");
+        fs::write(source.path().join("hello.txt"), b"hello\n").expect("write hello.txt");
+
+        let snapshot = source.path().join("snap.gcl");
+        build_snapshot(source.path(), &snapshot).expect("build snapshot");
+
+        // Inject an unknown future key into the plist section.
+        // The snapshot-hash is computed over path/mode/sha256 — not over the
+        // plist text — so adding an extra key does not invalidate the hash.
+        let text = fs::read_to_string(&snapshot).expect("read snapshot");
+        let modified = text.replace(":mode ", ":mtime \"1234567890\"\n     :mode ");
+
+        let modified_snap = source.path().join("modified.gcl");
+        fs::write(&modified_snap, modified).expect("write modified snapshot");
+
+        // Must succeed — T-19 regression guard.
+        verify_snapshot(&modified_snap)
+            .expect("snapshot with unknown plist key must verify successfully");
+    }
+
+    /// Unknown keys must be ignored for *all* three public entry points
+    /// (verify, materialize).  Materialize additionally must restore the
+    /// actual file content correctly.
+    #[test]
+    fn materialize_snapshot_silently_ignores_unknown_plist_key() {
+        let source = TempDir::new().expect("create source tempdir");
+        fs::write(source.path().join("data.txt"), b"payload\n").expect("write data.txt");
+
+        let snapshot = source.path().join("snap.gcl");
+        build_snapshot(source.path(), &snapshot).expect("build snapshot");
+
+        let text = fs::read_to_string(&snapshot).expect("read snapshot");
+        // Inject two unknown keys of different positions.
+        let modified = text
+            .replace(":path ", ":x-future-key \"v\"\n     :path ")
+            .replace(":sha256 ", ":x-other \"42\"\n     :sha256 ");
+
+        let modified_snap = source.path().join("modified.gcl");
+        fs::write(&modified_snap, modified).expect("write modified snapshot");
+
+        let restored = TempDir::new().expect("create restored tempdir");
+        materialize_snapshot(&modified_snap, restored.path())
+            .expect("materialize with unknown keys must succeed");
+
+        let bytes = fs::read(restored.path().join("data.txt")).expect("read restored data.txt");
+        assert_eq!(bytes, b"payload\n");
+    }
+
+    /// Forward-compat round-trip: a snapshot written with extra keys can be
+    /// parsed, re-serialized (via materialize + rebuild), and produce an
+    /// identical snapshot-hash as the original.
+    #[test]
+    fn snapshot_with_unknown_key_roundtrip_preserves_hash() {
+        let source = TempDir::new().expect("create source tempdir");
+        fs::write(source.path().join("a.txt"), b"round\n").expect("write a.txt");
+
+        let snap_orig = source.path().join("orig.gcl");
+        build_snapshot(source.path(), &snap_orig).expect("build original snapshot");
+
+        let text = fs::read_to_string(&snap_orig).expect("read original snapshot");
+        let modified = text.replace(":size ", ":git-object-id \"deadbeef\"\n     :size ");
+
+        let snap_future = source.path().join("future.gcl");
+        fs::write(&snap_future, modified).expect("write future snapshot");
+
+        let restored = TempDir::new().expect("create restored tempdir");
+        materialize_snapshot(&snap_future, restored.path()).expect("materialize future snapshot");
+
+        let snap_rebuilt = source.path().join("rebuilt.gcl");
+        build_snapshot(restored.path(), &snap_rebuilt).expect("rebuild snapshot");
+
+        let hash_orig = read_snapshot_hash(&snap_orig);
+        let hash_rebuilt = read_snapshot_hash(&snap_rebuilt);
+        assert_eq!(
+            hash_orig, hash_rebuilt,
+            "snapshot-hash must be identical after round-trip through future-format snapshot"
+        );
+    }
+
+    // ── T-26b: materialize must reject non-empty output directories ───────────
+
+    /// Materializing into a directory that already contains files must fail
+    /// with a clear diagnostic — this prevents TOCTOU-style symlink-escalation
+    /// attacks via pre-planted symlinks in the output directory.
+    #[test]
+    fn materialize_into_non_empty_directory_fails_with_clear_error() {
+        let source = TempDir::new().expect("create source tempdir");
+        fs::write(source.path().join("a.txt"), b"content\n").expect("write a.txt");
+
+        let snapshot = source.path().join("snap.gcl");
+        build_snapshot(source.path(), &snapshot).expect("build snapshot");
+
+        let output = TempDir::new().expect("create output tempdir");
+        fs::write(
+            output.path().join("existing_file.txt"),
+            b"I was here first\n",
+        )
+        .expect("write pre-existing file");
+
+        let err = materialize_snapshot(&snapshot, output.path())
+            .expect_err("materialize into non-empty directory must fail");
+
+        match err {
+            GitClosureError::Parse(msg) => {
+                assert!(
+                    msg.contains("empty"),
+                    "error message should mention 'empty', got: {msg}"
+                );
+            }
+            other => panic!("expected Parse error, got {other:?}"),
+        }
+    }
+
+    /// An *existing but empty* directory is an acceptable target.  `create_dir_all`
+    /// makes this scenario realistic (pre-created target dirs in scripts).
+    #[test]
+    fn materialize_into_existing_empty_directory_succeeds() {
+        let source = TempDir::new().expect("create source tempdir");
+        fs::write(source.path().join("a.txt"), b"content\n").expect("write a.txt");
+
+        let snapshot = source.path().join("snap.gcl");
+        build_snapshot(source.path(), &snapshot).expect("build snapshot");
+
+        let output = TempDir::new().expect("create output tempdir");
+        // Directory pre-exists but is empty — must be accepted.
+        materialize_snapshot(&snapshot, output.path())
+            .expect("materialize into existing empty directory must succeed");
+
+        let bytes = fs::read(output.path().join("a.txt")).expect("read materialized a.txt");
+        assert_eq!(bytes, b"content\n");
+    }
+
+    /// A subdirectory structure already present in output must also be rejected.
+    #[test]
+    fn materialize_into_directory_with_subdirectory_fails() {
+        let source = TempDir::new().expect("create source tempdir");
+        fs::write(source.path().join("a.txt"), b"content\n").expect("write a.txt");
+
+        let snapshot = source.path().join("snap.gcl");
+        build_snapshot(source.path(), &snapshot).expect("build snapshot");
+
+        let output = TempDir::new().expect("create output tempdir");
+        fs::create_dir(output.path().join("subdir")).expect("create subdir");
+
+        let err = materialize_snapshot(&snapshot, output.path())
+            .expect_err("materialize into directory with subdir must fail");
+        assert!(
+            matches!(err, GitClosureError::Parse(_)),
+            "expected Parse error, got {err:?}"
+        );
     }
 }
