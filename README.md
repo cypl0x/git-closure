@@ -236,6 +236,13 @@ git-closure query dotfiles.gcl '**/*.nix'
 git-closure watch ~/dotfiles
 ```
 
+When `--output` is omitted, `build` derives a filename from the source:
+
+- `gh:owner/repo@main` → `repo@main.gcl`
+- `gl:group/project@v1.2` → `project@v1.2.gcl`
+- `.` → `<current-directory-name>.gcl`
+- fallback for non-nameable sources: `snapshot.gcl`
+
 ### Provider Architecture (v0.1)
 
 `git-closure build` accepts either local paths or remote sources via a provider layer.

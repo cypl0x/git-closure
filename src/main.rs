@@ -27,7 +27,7 @@ enum Commands {
         #[arg(
             short,
             long,
-            help = "Output file (default: <source-basename>.gcl or snapshot.gcl)"
+            help = "Output file (default: <source-basename>[@ref].gcl; for '.' uses current directory basename)"
         )]
         output: Option<PathBuf>,
         #[arg(long)]
@@ -165,7 +165,7 @@ fn run() -> Result<(), GitClosureError> {
                 path
             } else {
                 let derived = derive_output_path(&source);
-                eprintln!("info: auto-derived output path: {}", derived.display());
+                eprintln!("note: writing snapshot to {}", derived.display());
                 derived
             };
             let options = BuildOptions {
@@ -352,19 +352,37 @@ fn json_string(s: &str) -> String {
 /// not supplied.
 ///
 /// Rules (first match wins):
-/// 1. `gh:owner/repo[@ref]` or `gl:owner/repo[@ref]` → `<repo>.gcl`
+/// 1. `gh:owner/repo[@ref]` or `gl:owner/repo[@ref]` → `<repo>[@ref].gcl`
 /// 2. Local filesystem path → `<basename>.gcl` (skipping `.` / `..`)
 /// 3. Fallback → `snapshot.gcl`
 pub(crate) fn derive_output_path(source: &str) -> PathBuf {
-    // Handle gh:/gl: shorthand — strip prefix, strip optional @ref, take last segment.
+    // Handle gh:/gl: shorthand — preserve optional @ref in output name.
     if let Some(rest) = source
         .strip_prefix("gh:")
         .or_else(|| source.strip_prefix("gl:"))
     {
-        let repo = rest.rsplit_once('@').map(|(r, _)| r).unwrap_or(rest);
+        let (repo, reference) = rest
+            .rsplit_once('@')
+            .map(|(r, rf)| (r, Some(rf)))
+            .unwrap_or((rest, None));
         let name = repo.rsplit_once('/').map(|(_, n)| n).unwrap_or(repo);
         if !name.is_empty() {
-            return PathBuf::from(format!("{name}.gcl"));
+            let output = if let Some(reference) = reference {
+                format!("{name}@{reference}.gcl")
+            } else {
+                format!("{name}.gcl")
+            };
+            return PathBuf::from(output);
+        }
+    }
+
+    if source == "." {
+        if let Ok(cwd) = std::env::current_dir() {
+            if let Some(name) = cwd.file_name().and_then(|n| n.to_str()) {
+                if !name.is_empty() && name != "." && name != ".." {
+                    return PathBuf::from(format!("{name}.gcl"));
+                }
+            }
         }
     }
 
@@ -397,6 +415,9 @@ fn print_completion(shell: CompletionShell) {
 mod tests {
     use super::derive_output_path;
     use std::path::PathBuf;
+    use std::sync::Mutex;
+
+    static CWD_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn derive_output_path_gh_shorthand() {
@@ -406,7 +427,7 @@ mod tests {
         );
         assert_eq!(
             derive_output_path("gh:owner/repo@main"),
-            PathBuf::from("repo.gcl")
+            PathBuf::from("repo@main.gcl")
         );
     }
 
@@ -414,7 +435,7 @@ mod tests {
     fn derive_output_path_gl_shorthand() {
         assert_eq!(
             derive_output_path("gl:group/project@v1.2"),
-            PathBuf::from("project.gcl")
+            PathBuf::from("project@v1.2.gcl")
         );
     }
 
@@ -434,5 +455,20 @@ mod tests {
     fn derive_output_path_fallback() {
         // A bare URL without a recognizable last segment.
         assert_eq!(derive_output_path(""), PathBuf::from("snapshot.gcl"));
+    }
+
+    #[test]
+    fn derive_output_path_dot_uses_current_directory_basename() {
+        let _guard = CWD_LOCK.lock().expect("lock current dir");
+        let original = std::env::current_dir().expect("capture current dir");
+        let temp = tempfile::TempDir::new().expect("create tempdir");
+        let project = temp.path().join("myproj");
+        std::fs::create_dir_all(&project).expect("create cwd fixture dir");
+
+        std::env::set_current_dir(&project).expect("switch cwd");
+        let derived = derive_output_path(".");
+        std::env::set_current_dir(original).expect("restore cwd");
+
+        assert_eq!(derived, PathBuf::from("myproj.gcl"));
     }
 }
