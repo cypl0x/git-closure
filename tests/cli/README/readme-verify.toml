@@ -1,0 +1,4 @@
+bin.name = "git-closure"
+args = ["verify", "single.gcl"]
+status = "success"
+fs.sandbox = true

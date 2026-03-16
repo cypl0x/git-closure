@@ -1,0 +1,4 @@
+bin.name = "git-closure"
+args = ["diff", "empty.gcl", "single.gcl", "--stat"]
+status.code = 1
+fs.sandbox = true

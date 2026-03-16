@@ -1,0 +1,4 @@
+bin.name = "git-closure"
+args = ["build", "repo", "-o", "repo.gcl"]
+status = "success"
+fs.sandbox = true

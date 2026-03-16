@@ -1,130 +1,93 @@
 # AGENTS.md - git-closure
 
+This file orients coding agents to the current repository shape and extension
+patterns. For sprint execution process and backlog discipline, also read
+`AGENTS_SPRINT.md`.
+
 ## Project Overview
 
-`git-closure` is a CLI tool to create deterministic, self-describing, verifiable snapshots of source code repositories. It produces `.gcl` files (S-expressions) that can be emailed, archived, versioned with git, or used for audits, reproducibility, and backup.
+`git-closure` is a Rust CLI/library for deterministic `.gcl` source snapshots.
+It supports building, verifying, diffing, formatting, rendering, and
+materializing snapshots with strong integrity and path-safety guarantees.
 
-## Build / Run Commands
+## Current CLI Commands
+
+- `build` (`b`)
+- `materialize` (`m`)
+- `verify` (`v`)
+- `list` (`l`)
+- `diff` (`d`)
+- `fmt` (`f`)
+- `render` (`r`)
+- `completion` (`c`)
+
+Deprecated/planned names like `explode`, `watch`, `query`, and `export` are not
+part of the current CLI surface.
+
+## Module Graph
+
+Core dependency flow:
+
+`error -> utils -> providers -> git/snapshot/* -> materialize -> lib`
+
+Entry points:
+
+- `src/main.rs` - clap CLI, output rendering, exit policy
+- `src/lib.rs` - public API re-exports and integration tests
+
+Core modules:
+
+- `src/error.rs` - typed error taxonomy
+- `src/utils.rs` - shared utility helpers
+- `src/providers/mod.rs` - source parsing + provider dispatch/fetch
+- `src/git.rs` - git-mode source selection and cleanliness checks
+- `src/snapshot/build.rs` - filesystem scan + snapshot assembly
+- `src/snapshot/hash.rs` - `snapshot-hash` and SHA-256 helpers
+- `src/snapshot/serial.rs` - parse/serialize/list/fmt for `.gcl`
+- `src/snapshot/diff.rs` - structural snapshot diff model/algorithm
+- `src/snapshot/render.rs` - markdown/html/json report rendering
+- `src/materialize.rs` - verify/materialize logic + path safety
+
+## Testing Conventions
+
+- Unit/integration tests live in module tests and `src/lib.rs` integration block.
+- CLI contract tests use `trycmd` in `tests/cli.rs` and fixtures under
+  `tests/cli/` (including `tests/cli/README/` for README examples).
+- Golden fixtures in `tests/fixtures/` lock byte-level external format behavior.
+- Property tests use `proptest` in existing test modules.
+- Fuzz targets live in separate `fuzz/` crate (`cargo-fuzz`).
+
+## Provider Extension Pattern
+
+When adding or changing source support:
+
+1. Extend `SourceSpec` parsing in `src/providers/mod.rs`.
+2. Keep provider selection in `choose_provider` grammar/semantics-driven.
+3. Add parse/dispatch tests before implementation changes.
+4. Preserve explicit `--provider` semantics even when auto behavior differs.
+5. Add CLI fixture coverage for user-visible behavior and errors.
+
+## Format Extension Pattern
+
+When changing `.gcl` semantics or serialization:
+
+1. Update model/parser/serializer (`snapshot/mod.rs`, `snapshot/serial.rs`).
+2. Preserve forward compatibility (unknown headers/plist keys).
+3. Update `SPEC.md` and `README.md` in the same change.
+4. Update golden fixtures under `tests/fixtures/` when bytes change.
+5. Add/adjust `trycmd` fixtures for CLI-visible behavior changes.
+
+## Build / Quality Commands
 
 ```bash
-# Build
+cargo test --locked
+cargo clippy --locked -- -D warnings
+cargo fmt --check
 cargo build --release
-
-# Run locally
-cargo run -- --help
-
-# Lint
-cargo clippy
-
-# Test
-cargo test
 ```
-
-### Running a Single Test
-
-```bash
-# Rust - run specific test
-cargo test test_name
-
-# Dart
-dart test test/name_test.dart
-
-# General - use --filter flag
-cargo test --test integration_test
-```
-
-## Code Style Guidelines
-
-### General Principles
-
-- Write concise, readable code with minimal abstraction
-- Prefer explicit over implicit
-- Fail fast with clear error messages
-- No comments unless explaining complex business logic
-
-### Language-Specific Conventions
-
-**If Rust:**
-- Use `rustfmt` for formatting (default settings)
-- Follow standard Rust naming: `snake_case` for functions/variables, `PascalCase` for types
-- Use `Result<T, Error>` for error handling with `?` operator
-- Prefer `anyhow` for application errors, `thiserror` for library errors
-- Run `cargo clippy` before committing
-
-**If Dart:**
-- Use `dart format` for formatting
-- Follow Dart style: `camelCase` for variables/functions, `PascalCase` for classes
-- Use `try/catch` or `Result` type for error handling
-- Enable strict typing: `dart analyze` should pass with no warnings
-
-**If Shell:**
-- Use `shellcheck` for linting
-- Use `set -euo pipefail`
-- Use `local` for all variables in functions
-- Double-quote all variable expansions
-
-### CLI Design
-
-- Use a subcommand structure: `cr <command> [options]`
-- Support both local paths and remote URLs as arguments
-- Provide sensible defaults with `--output`, `--include-logs`, `--include-metadata` flags
-- Show progress for long operations
-
-### Output Format
-
-The `.repo.txt` format should include:
-1. Header comment with project metadata (name, git hash, author, dates, file count)
-2. File tree structure
-3. Each file preceded by a header comment with path and git metadata
-4. File contents separated by headers
-
-### Error Handling
-
-- Exit with code 0 for success, 1 for errors
-- Print errors to stderr
-- Include helpful context in error messages (path, operation, reason)
-
-### Testing
-
-- Unit tests for core concatenation logic
-- Integration tests for CLI commands
-- Test both local paths and remote URLs
-- Mock network calls in tests where possible
-
-### File Organization (Example for Rust)
-
-```
-bin/git-closure.rs   # CLI entry point
-src/
-  commands/
-    build.rs       # git-closure build subcommand
-    watch.rs       # git-closure watch subcommand
-    explode.rs     # git-closure explode subcommand
-    verify.rs      # git-closure verify subcommand
-    diff.rs        # git-closure diff subcommand
-    query.rs       # git-closure query subcommand
-    export.rs      # git-closure export subcommand
-  lib.rs           # Library root
-  concat.rs        # Core concatenation logic
-  sexpr.rs         # S-expression serialization
-  metadata.rs      # Git/file metadata extraction
-  hash.rs          # SHA-256 hashing
-  providers/
-    github.rs      # GitHub API provider
-    gitlab.rs      # GitLab API provider
-    local.rs       # Local filesystem provider
-tests/
-  integration_test.rs
-```
-
-## Dependencies
-
-- For remote repos: use GitHub CLI (`gh`) or raw HTTP requests
-- Minimize external dependencies
-- Use standard library where possible
 
 ## Git Conventions
 
-- Use conventional commits: `feat:`, `fix:`, `refactor:`, `docs:`
-- Keep commits atomic and small
-- Run lint/test before committing
+- Use conventional commits (`feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `chore:`).
+- Keep commits logically scoped.
+- Keep quality gates green before committing.
