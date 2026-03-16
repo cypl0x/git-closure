@@ -435,6 +435,8 @@ pub fn fmt_snapshot_with_options(snapshot: &Path, options: FmtOptions) -> Result
 mod tests {
     use super::*;
     use crate::snapshot::hash::compute_snapshot_hash;
+    use proptest::prelude::*;
+    use std::collections::BTreeMap;
 
     /// Build a minimal SnapshotHeader (no git metadata) for use in tests.
     fn make_header(files: &[SnapshotFile]) -> SnapshotHeader {
@@ -459,6 +461,81 @@ mod tests {
             symlink_target: None,
             content: bytes,
         }
+    }
+
+    fn path_strategy() -> impl Strategy<Value = String> {
+        proptest::string::string_regex(r"[A-Za-z0-9_.-]{1,12}(/[A-Za-z0-9_.-]{1,12}){0,2}")
+            .expect("valid path regex")
+            .prop_filter("path must be safe and relative", |path| {
+                !path.starts_with('/')
+                    && !path
+                        .split('/')
+                        .any(|segment| segment == "." || segment == "..")
+            })
+    }
+
+    fn symlink_target_strategy() -> impl Strategy<Value = String> {
+        proptest::string::string_regex(r"[A-Za-z0-9_.-]{1,16}(/[A-Za-z0-9_.-]{1,16}){0,2}")
+            .expect("valid symlink target regex")
+            .prop_filter("symlink target must not be empty", |target| {
+                !target.is_empty()
+            })
+    }
+
+    fn snapshot_file_strategy() -> impl Strategy<Value = SnapshotFile> {
+        let regular_utf8 = (
+            path_strategy(),
+            prop::sample::select(vec!["644".to_string(), "755".to_string()]),
+            proptest::string::string_regex("[ -~]{0,64}").expect("valid UTF-8 content regex"),
+        )
+            .prop_map(|(path, mode, content)| {
+                let bytes = content.into_bytes();
+                SnapshotFile {
+                    path,
+                    sha256: crate::snapshot::hash::sha256_hex(&bytes),
+                    mode,
+                    size: bytes.len() as u64,
+                    encoding: None,
+                    symlink_target: None,
+                    content: bytes,
+                }
+            });
+
+        let regular_binary = (
+            path_strategy(),
+            prop::sample::select(vec!["644".to_string(), "755".to_string()]),
+            prop::collection::vec(any::<u8>(), 0..64),
+        )
+            .prop_map(|(path, mode, bytes)| SnapshotFile {
+                path,
+                sha256: crate::snapshot::hash::sha256_hex(&bytes),
+                mode,
+                size: bytes.len() as u64,
+                encoding: Some("base64".to_string()),
+                symlink_target: None,
+                content: bytes,
+            });
+
+        let symlink =
+            (path_strategy(), symlink_target_strategy()).prop_map(|(path, target)| SnapshotFile {
+                path,
+                sha256: String::new(),
+                mode: "120000".to_string(),
+                size: 0,
+                encoding: None,
+                symlink_target: Some(target),
+                content: Vec::new(),
+            });
+
+        prop_oneof![regular_utf8, regular_binary, symlink]
+    }
+
+    fn canonicalize_generated_files(files: Vec<SnapshotFile>) -> Vec<SnapshotFile> {
+        let mut by_path = BTreeMap::new();
+        for file in files {
+            by_path.entry(file.path.clone()).or_insert(file);
+        }
+        by_path.into_values().collect()
     }
 
     #[test]
@@ -493,6 +570,38 @@ mod tests {
         let text = serialize_snapshot(&files_arr, &header);
         let (_, files) = parse_snapshot(&text).expect("parse binary snapshot");
         assert_eq!(files[0].content, bytes);
+    }
+
+    proptest! {
+        #[test]
+        fn proptest_parse_serialize_roundtrip(files in prop::collection::vec(snapshot_file_strategy(), 0..16)) {
+            let files = canonicalize_generated_files(files);
+            let header = make_header(&files);
+            let serialized = serialize_snapshot(&files, &header);
+            let (parsed_header, parsed_files) = parse_snapshot(&serialized)
+                .expect("generated snapshot should parse");
+
+            prop_assert_eq!(parsed_header.file_count, files.len());
+            prop_assert_eq!(parsed_header.snapshot_hash, compute_snapshot_hash(&files));
+            prop_assert_eq!(parsed_files, files);
+        }
+
+        #[test]
+        fn proptest_fmt_is_idempotent(files in prop::collection::vec(snapshot_file_strategy(), 0..16)) {
+            let files = canonicalize_generated_files(files);
+            let header = make_header(&files);
+            let serialized = serialize_snapshot(&files, &header);
+
+            let tmp = tempfile::TempDir::new().expect("create tempdir");
+            let snapshot = tmp.path().join("proptest.gcl");
+            std::fs::write(&snapshot, serialized).expect("write generated snapshot");
+
+            let once = fmt_snapshot(&snapshot).expect("first fmt pass");
+            std::fs::write(&snapshot, &once).expect("write first fmt result");
+            let twice = fmt_snapshot(&snapshot).expect("second fmt pass");
+
+            prop_assert_eq!(twice, once);
+        }
     }
 
     #[test]

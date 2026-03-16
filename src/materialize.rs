@@ -176,7 +176,7 @@ pub fn materialize_snapshot(snapshot: &Path, output: &Path) -> Result<()> {
 
 /// Validates that a snapshot path is a safe, normalized relative path and
 /// converts it to a `PathBuf` suitable for `output.join(path)`.
-fn sanitized_relative_path(path: &str) -> Result<PathBuf> {
+pub(crate) fn sanitized_relative_path(path: &str) -> Result<PathBuf> {
     if path.is_empty() {
         return Err(GitClosureError::UnsafePath("path is empty".to_string()));
     }

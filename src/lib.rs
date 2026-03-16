@@ -34,6 +34,21 @@ pub use snapshot::render::{render_snapshot, RenderFormat};
 pub use snapshot::serial::{fmt_snapshot, fmt_snapshot_with_options, list_snapshot, FmtOptions};
 pub use snapshot::{BuildOptions, ListEntry, VerifyReport};
 
+#[doc(hidden)]
+pub fn fuzz_parse_snapshot(input: &str) {
+    let _ = snapshot::serial::parse_snapshot(input);
+}
+
+#[doc(hidden)]
+pub fn fuzz_sanitized_relative_path(path: &str) {
+    let _ = materialize::sanitized_relative_path(path);
+}
+
+#[doc(hidden)]
+pub fn fuzz_lexical_normalize(path: &str) {
+    let _ = materialize::lexical_normalize(std::path::Path::new(path));
+}
+
 // ── Integration test suite ────────────────────────────────────────────────────
 
 #[cfg(test)]
