@@ -2,6 +2,7 @@
 /// materialize layers.  Deliberately kept as a types-only module to keep
 /// the dependency graph acyclic.
 pub mod build;
+pub mod diff;
 pub mod hash;
 pub mod serial;
 

@@ -5,8 +5,8 @@ use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{generate, shells};
 
 use git_closure::{
-    build_snapshot_from_source, fmt_snapshot, list_snapshot, materialize_snapshot,
-    providers::ProviderKind, verify_snapshot, BuildOptions, GitClosureError, ListEntry,
+    build_snapshot_from_source, diff_snapshots, fmt_snapshot, list_snapshot, materialize_snapshot,
+    providers::ProviderKind, verify_snapshot, BuildOptions, DiffEntry, GitClosureError, ListEntry,
 };
 
 #[derive(Parser, Debug)]
@@ -58,6 +58,18 @@ enum Commands {
         json: bool,
         #[arg(long, help = "Show sha256, mode, size, and type for each entry")]
         long: bool,
+    },
+    #[command(
+        about = "Compare two snapshots and show differences",
+        visible_alias = "d"
+    )]
+    Diff {
+        #[arg(help = "Left (old) snapshot")]
+        left: PathBuf,
+        #[arg(help = "Right (new) snapshot")]
+        right: PathBuf,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
     },
     #[command(about = "Canonically reformat a snapshot file", visible_alias = "f")]
     Fmt {
@@ -145,6 +157,13 @@ fn run() -> Result<(), GitClosureError> {
             let entries = list_snapshot(&snapshot)?;
             print_list(&entries, json, long);
         }
+        Commands::Diff { left, right, json } => {
+            let result = diff_snapshots(&left, &right)?;
+            print_diff(&result.entries, json);
+            if !result.identical {
+                process::exit(1);
+            }
+        }
         Commands::Fmt { snapshot, check } => {
             let canonical = fmt_snapshot(&snapshot)?;
             if check {
@@ -169,6 +188,58 @@ fn run() -> Result<(), GitClosureError> {
 }
 
 // ── Output helpers ────────────────────────────────────────────────────────────
+
+fn print_diff(entries: &[DiffEntry], json: bool) {
+    if json {
+        println!("[");
+        for (i, e) in entries.iter().enumerate() {
+            let comma = if i + 1 < entries.len() { "," } else { "" };
+            match e {
+                DiffEntry::Added { path } => {
+                    println!(
+                        "  {{\"type\":\"added\",\"path\":{}}}{}",
+                        json_string(path),
+                        comma
+                    );
+                }
+                DiffEntry::Removed { path } => {
+                    println!(
+                        "  {{\"type\":\"removed\",\"path\":{}}}{}",
+                        json_string(path),
+                        comma
+                    );
+                }
+                DiffEntry::Modified { path } => {
+                    println!(
+                        "  {{\"type\":\"modified\",\"path\":{}}}{}",
+                        json_string(path),
+                        comma
+                    );
+                }
+                DiffEntry::Renamed { old_path, new_path } => {
+                    println!(
+                        "  {{\"type\":\"renamed\",\"old_path\":{},\"new_path\":{}}}{}",
+                        json_string(old_path),
+                        json_string(new_path),
+                        comma
+                    );
+                }
+            }
+        }
+        println!("]");
+    } else {
+        for e in entries {
+            match e {
+                DiffEntry::Added { path } => println!("A\t{path}"),
+                DiffEntry::Removed { path } => println!("D\t{path}"),
+                DiffEntry::Modified { path } => println!("M\t{path}"),
+                DiffEntry::Renamed { old_path, new_path } => {
+                    println!("R\t{old_path}\t->\t{new_path}")
+                }
+            }
+        }
+    }
+}
 
 fn print_list(entries: &[ListEntry], json: bool, long: bool) {
     if json {

@@ -1,0 +1,374 @@
+/// Snapshot diffing: compare two `.gcl` files and report changes.
+use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
+
+use crate::utils::io_error_with_path;
+
+use super::serial::parse_snapshot;
+use super::{Result, SnapshotFile};
+
+// ── Public types ──────────────────────────────────────────────────────────────
+
+/// A single change entry produced by [`diff_snapshots`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiffEntry {
+    /// File exists in the right snapshot but not the left.
+    Added { path: String },
+    /// File exists in the left snapshot but not the right.
+    Removed { path: String },
+    /// File exists in both snapshots but its content (sha256) has changed.
+    Modified { path: String },
+    /// File was removed from `old_path` and appeared at `new_path` with the
+    /// same SHA-256.  This is a heuristic: a true rename has identical content.
+    Renamed { old_path: String, new_path: String },
+}
+
+/// Result of comparing two snapshots.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffResult {
+    /// Ordered list of changes.  Entries are sorted: renames first (by new
+    /// path), then removed, added, modified — each group in path order.
+    pub entries: Vec<DiffEntry>,
+    /// Convenience flag: `true` when `entries` is empty.
+    pub identical: bool,
+}
+
+// ── Public API ────────────────────────────────────────────────────────────────
+
+/// Compares two `.gcl` snapshot files and returns the set of differences.
+///
+/// The returned [`DiffResult`] is in a deterministic, sorted order suitable
+/// for human display and golden-file tests.
+///
+/// # Rename detection
+///
+/// A file is reported as `Renamed` when a path disappears from the left
+/// snapshot and a path with the **same SHA-256** appears in the right
+/// snapshot.  When there are multiple candidates (duplicate content), the
+/// lexicographically smallest new path is chosen.  This is O(n log n) via a
+/// reverse-index over the right snapshot's sha256 values.
+///
+/// Symlinks are compared by target string, not sha256 (which is empty for
+/// symlinks).  Two symlinks with the same target pointing to the same path
+/// are considered identical; different targets are `Modified`.
+pub fn diff_snapshots(left: &Path, right: &Path) -> Result<DiffResult> {
+    let left_text = fs::read_to_string(left).map_err(|err| io_error_with_path(err, left))?;
+    let right_text = fs::read_to_string(right).map_err(|err| io_error_with_path(err, right))?;
+
+    let (_, left_files) = parse_snapshot(&left_text)?;
+    let (_, right_files) = parse_snapshot(&right_text)?;
+
+    Ok(compute_diff(&left_files, &right_files))
+}
+
+// ── Core algorithm ────────────────────────────────────────────────────────────
+
+fn compute_diff(left: &[SnapshotFile], right: &[SnapshotFile]) -> DiffResult {
+    // Key for content-equality: sha256 for regular files, target for symlinks.
+    fn content_key(f: &SnapshotFile) -> String {
+        if let Some(target) = &f.symlink_target {
+            format!("symlink:{target}")
+        } else {
+            f.sha256.clone()
+        }
+    }
+
+    let left_map: HashMap<&str, &SnapshotFile> =
+        left.iter().map(|f| (f.path.as_str(), f)).collect();
+    let right_map: HashMap<&str, &SnapshotFile> =
+        right.iter().map(|f| (f.path.as_str(), f)).collect();
+
+    // Build a reverse index: content_key → sorted list of new paths (right-only).
+    // We build this incrementally after we know which right paths are "added".
+    let mut candidates_removed: Vec<&SnapshotFile> = Vec::new();
+    let mut candidates_added: Vec<&SnapshotFile> = Vec::new();
+    let mut modified: Vec<String> = Vec::new();
+
+    for lf in left {
+        match right_map.get(lf.path.as_str()) {
+            None => candidates_removed.push(lf),
+            Some(&rf) => {
+                if content_key(lf) != content_key(rf) {
+                    modified.push(lf.path.clone());
+                }
+                // identical — skip
+            }
+        }
+    }
+
+    for rf in right {
+        if !left_map.contains_key(rf.path.as_str()) {
+            candidates_added.push(rf);
+        }
+    }
+
+    // Build reverse index for rename detection.
+    let mut added_by_key: HashMap<String, Vec<&str>> = HashMap::new();
+    for rf in &candidates_added {
+        added_by_key
+            .entry(content_key(rf))
+            .or_default()
+            .push(&rf.path);
+    }
+    // Sort each bucket so we pick the lexicographically smallest new path.
+    for v in added_by_key.values_mut() {
+        v.sort_unstable();
+    }
+
+    let mut renames: Vec<DiffEntry> = Vec::new();
+    let mut renamed_old_paths: std::collections::HashSet<String> = Default::default();
+    let mut renamed_new_paths: std::collections::HashSet<String> = Default::default();
+
+    // Match removals to additions by content key.  Each addition can only be
+    // consumed once, so we track which new paths have already been claimed.
+    let mut consumed: std::collections::HashSet<String> = Default::default();
+
+    // Sort candidates_removed by path for determinism.
+    let mut candidates_removed_sorted = candidates_removed.to_vec();
+    candidates_removed_sorted.sort_by(|a, b| a.path.cmp(&b.path));
+
+    for lf in &candidates_removed_sorted {
+        let key = content_key(lf);
+        if let Some(new_paths) = added_by_key.get(&key) {
+            if let Some(&new_path) = new_paths.iter().find(|&&p| !consumed.contains(p)) {
+                consumed.insert(new_path.to_string());
+                renamed_old_paths.insert(lf.path.clone());
+                renamed_new_paths.insert(new_path.to_string());
+                renames.push(DiffEntry::Renamed {
+                    old_path: lf.path.clone(),
+                    new_path: new_path.to_string(),
+                });
+            }
+        }
+    }
+
+    renames.sort_by(|a, b| {
+        let ap = if let DiffEntry::Renamed { new_path, .. } = a {
+            new_path
+        } else {
+            unreachable!()
+        };
+        let bp = if let DiffEntry::Renamed { new_path, .. } = b {
+            new_path
+        } else {
+            unreachable!()
+        };
+        ap.cmp(bp)
+    });
+
+    let mut removed: Vec<DiffEntry> = candidates_removed_sorted
+        .iter()
+        .filter(|f| !renamed_old_paths.contains(&f.path))
+        .map(|f| DiffEntry::Removed {
+            path: f.path.clone(),
+        })
+        .collect();
+    removed.sort_by(|a, b| {
+        let ap = if let DiffEntry::Removed { path } = a {
+            path
+        } else {
+            unreachable!()
+        };
+        let bp = if let DiffEntry::Removed { path } = b {
+            path
+        } else {
+            unreachable!()
+        };
+        ap.cmp(bp)
+    });
+
+    let mut added: Vec<DiffEntry> = candidates_added
+        .iter()
+        .filter(|f| !renamed_new_paths.contains(&f.path))
+        .map(|f| DiffEntry::Added {
+            path: f.path.clone(),
+        })
+        .collect();
+    added.sort_by(|a, b| {
+        let ap = if let DiffEntry::Added { path } = a {
+            path
+        } else {
+            unreachable!()
+        };
+        let bp = if let DiffEntry::Added { path } = b {
+            path
+        } else {
+            unreachable!()
+        };
+        ap.cmp(bp)
+    });
+
+    modified.sort();
+    let modified_entries: Vec<DiffEntry> = modified
+        .into_iter()
+        .map(|path| DiffEntry::Modified { path })
+        .collect();
+
+    let mut entries = Vec::new();
+    entries.extend(renames);
+    entries.extend(removed);
+    entries.extend(added);
+    entries.extend(modified_entries);
+
+    let identical = entries.is_empty();
+    DiffResult { entries, identical }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::snapshot::hash::{compute_snapshot_hash, sha256_hex};
+    use crate::snapshot::serial::serialize_snapshot;
+    use crate::snapshot::SnapshotFile;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn text_file(path: &str, content: &str) -> SnapshotFile {
+        let bytes = content.as_bytes().to_vec();
+        SnapshotFile {
+            path: path.to_string(),
+            sha256: sha256_hex(&bytes),
+            mode: "644".to_string(),
+            size: bytes.len() as u64,
+            encoding: None,
+            symlink_target: None,
+            content: bytes,
+        }
+    }
+
+    fn symlink_file(path: &str, target: &str) -> SnapshotFile {
+        SnapshotFile {
+            path: path.to_string(),
+            sha256: String::new(),
+            mode: "120000".to_string(),
+            size: 0,
+            encoding: None,
+            symlink_target: Some(target.to_string()),
+            content: Vec::new(),
+        }
+    }
+
+    fn write_snap(dir: &TempDir, name: &str, files: &[SnapshotFile]) -> std::path::PathBuf {
+        let mut sorted = files.to_vec();
+        sorted.sort_by(|a, b| a.path.cmp(&b.path));
+        let hash = compute_snapshot_hash(&sorted);
+        let text = serialize_snapshot(&sorted, &hash);
+        let path = dir.path().join(name);
+        fs::write(&path, text.as_bytes()).unwrap();
+        path
+    }
+
+    #[test]
+    fn diff_identical_snapshots_is_empty() {
+        let dir = TempDir::new().unwrap();
+        let files = vec![text_file("a.txt", "hello"), text_file("b.txt", "world")];
+        let left = write_snap(&dir, "left.gcl", &files);
+        let right = write_snap(&dir, "right.gcl", &files);
+        let result = diff_snapshots(&left, &right).unwrap();
+        assert!(result.identical);
+        assert!(result.entries.is_empty());
+    }
+
+    #[test]
+    fn diff_detects_added_file() {
+        let dir = TempDir::new().unwrap();
+        let left_files = vec![text_file("a.txt", "a")];
+        let right_files = vec![text_file("a.txt", "a"), text_file("b.txt", "b")];
+        let left = write_snap(&dir, "left.gcl", &left_files);
+        let right = write_snap(&dir, "right.gcl", &right_files);
+        let result = diff_snapshots(&left, &right).unwrap();
+        assert!(!result.identical);
+        assert!(result.entries.contains(&DiffEntry::Added {
+            path: "b.txt".to_string()
+        }));
+    }
+
+    #[test]
+    fn diff_detects_removed_file() {
+        let dir = TempDir::new().unwrap();
+        let left_files = vec![text_file("a.txt", "a"), text_file("b.txt", "b")];
+        let right_files = vec![text_file("a.txt", "a")];
+        let left = write_snap(&dir, "left.gcl", &left_files);
+        let right = write_snap(&dir, "right.gcl", &right_files);
+        let result = diff_snapshots(&left, &right).unwrap();
+        assert!(result.entries.contains(&DiffEntry::Removed {
+            path: "b.txt".to_string()
+        }));
+    }
+
+    #[test]
+    fn diff_detects_modified_file() {
+        let dir = TempDir::new().unwrap();
+        let left_files = vec![text_file("a.txt", "old content")];
+        let right_files = vec![text_file("a.txt", "new content")];
+        let left = write_snap(&dir, "left.gcl", &left_files);
+        let right = write_snap(&dir, "right.gcl", &right_files);
+        let result = diff_snapshots(&left, &right).unwrap();
+        assert!(result.entries.contains(&DiffEntry::Modified {
+            path: "a.txt".to_string()
+        }));
+    }
+
+    #[test]
+    fn diff_detects_rename() {
+        let dir = TempDir::new().unwrap();
+        // Same content, different path: rename.
+        let left_files = vec![text_file("old/name.txt", "content")];
+        let right_files = vec![text_file("new/name.txt", "content")];
+        let left = write_snap(&dir, "left.gcl", &left_files);
+        let right = write_snap(&dir, "right.gcl", &right_files);
+        let result = diff_snapshots(&left, &right).unwrap();
+        assert!(
+            result.entries.contains(&DiffEntry::Renamed {
+                old_path: "old/name.txt".to_string(),
+                new_path: "new/name.txt".to_string(),
+            }),
+            "expected Renamed, got {:?}",
+            result.entries
+        );
+        // Must NOT also appear as Added/Removed.
+        assert!(!result.entries.contains(&DiffEntry::Added {
+            path: "new/name.txt".to_string()
+        }));
+        assert!(!result.entries.contains(&DiffEntry::Removed {
+            path: "old/name.txt".to_string()
+        }));
+    }
+
+    #[test]
+    fn diff_symlink_target_change_is_modified() {
+        let dir = TempDir::new().unwrap();
+        let left_files = vec![symlink_file("link", "target_a.txt")];
+        let right_files = vec![symlink_file("link", "target_b.txt")];
+        let left = write_snap(&dir, "left.gcl", &left_files);
+        let right = write_snap(&dir, "right.gcl", &right_files);
+        let result = diff_snapshots(&left, &right).unwrap();
+        assert!(result.entries.contains(&DiffEntry::Modified {
+            path: "link".to_string()
+        }));
+    }
+
+    #[test]
+    fn diff_output_ordering_renames_first() {
+        let dir = TempDir::new().unwrap();
+        // One rename, one addition, one removal.
+        let left_files = vec![
+            text_file("old.txt", "renamed content"),
+            text_file("removed.txt", "gone"),
+        ];
+        let right_files = vec![
+            text_file("new.txt", "renamed content"),
+            text_file("added.txt", "new"),
+        ];
+        let left = write_snap(&dir, "left.gcl", &left_files);
+        let right = write_snap(&dir, "right.gcl", &right_files);
+        let result = diff_snapshots(&left, &right).unwrap();
+        assert_eq!(result.entries.len(), 3);
+        assert!(
+            matches!(result.entries[0], DiffEntry::Renamed { .. }),
+            "first entry must be Renamed, got {:?}",
+            result.entries[0]
+        );
+    }
+}

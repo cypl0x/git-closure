@@ -29,6 +29,7 @@ pub use snapshot::build::{
     build_snapshot, build_snapshot_from_provider, build_snapshot_from_source,
     build_snapshot_with_options,
 };
+pub use snapshot::diff::{diff_snapshots, DiffEntry, DiffResult};
 pub use snapshot::serial::{fmt_snapshot, list_snapshot};
 pub use snapshot::{BuildOptions, ListEntry, VerifyReport};
 
