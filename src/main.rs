@@ -258,10 +258,16 @@ fn print_diff(entries: &[DiffEntry], json: bool) {
                         comma
                     );
                 }
-                DiffEntry::Modified { path } => {
+                DiffEntry::Modified {
+                    path,
+                    old_sha256,
+                    new_sha256,
+                } => {
                     println!(
-                        "  {{\"type\":\"modified\",\"path\":{}}}{}",
+                        "  {{\"type\":\"modified\",\"path\":{},\"old_sha256\":{},\"new_sha256\":{}}}{}",
                         json_string(path),
+                        json_string(old_sha256),
+                        json_string(new_sha256),
                         comma
                     );
                 }
@@ -295,7 +301,13 @@ fn print_diff(entries: &[DiffEntry], json: bool) {
             match e {
                 DiffEntry::Added { path } => println!("A\t{path}"),
                 DiffEntry::Removed { path } => println!("D\t{path}"),
-                DiffEntry::Modified { path } => println!("M\t{path}"),
+                DiffEntry::Modified {
+                    path,
+                    old_sha256,
+                    new_sha256,
+                } => {
+                    println!("M\t{path}\t{old_sha256}\t->\t{new_sha256}")
+                }
                 DiffEntry::Renamed { old_path, new_path } => {
                     println!("R\t{old_path}\t->\t{new_path}")
                 }

@@ -236,6 +236,11 @@ git-closure query dotfiles.gcl '**/*.nix'
 git-closure watch ~/dotfiles
 ```
 
+Diff output policy (v0.1): the default text output is the canonical human
+surface and includes identity details for changed entries (e.g. old/new SHA-256
+for modified files, old/new mode for mode changes). `--json` exposes the same
+fields structurally, and `--stat` provides count-only summaries for scripting.
+
 When `--output` is omitted, `build` derives a filename from the source:
 
 - `gh:owner/repo@main` → `repo@main.gcl`

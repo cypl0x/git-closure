@@ -18,8 +18,12 @@ pub enum DiffEntry {
     Added { path: String },
     /// File exists in the left snapshot but not the right.
     Removed { path: String },
-    /// File exists in both snapshots but its content (sha256) has changed.
-    Modified { path: String },
+    /// File exists in both snapshots but its content identity changed.
+    Modified {
+        path: String,
+        old_sha256: String,
+        new_sha256: String,
+    },
     /// File was removed from `old_path` and appeared at `new_path` with the
     /// same SHA-256.  This is a heuristic: a true rename has identical content.
     Renamed { old_path: String, new_path: String },
@@ -91,7 +95,7 @@ fn compute_diff(left: &[SnapshotFile], right: &[SnapshotFile]) -> DiffResult {
     let mut candidates_removed: Vec<&SnapshotFile> = Vec::new();
     let mut candidates_added: Vec<&SnapshotFile> = Vec::new();
     let mut mode_changed: Vec<DiffEntry> = Vec::new();
-    let mut modified: Vec<String> = Vec::new();
+    let mut modified: Vec<DiffEntry> = Vec::new();
     let mut forced_added_paths: HashSet<&str> = HashSet::new();
 
     for lf in left {
@@ -111,7 +115,11 @@ fn compute_diff(left: &[SnapshotFile], right: &[SnapshotFile]) -> DiffResult {
                 }
 
                 if content_key(lf) != content_key(rf) {
-                    modified.push(lf.path.clone());
+                    modified.push(DiffEntry::Modified {
+                        path: lf.path.clone(),
+                        old_sha256: lf.sha256.clone(),
+                        new_sha256: rf.sha256.clone(),
+                    });
                 } else if lf.mode != rf.mode {
                     mode_changed.push(DiffEntry::ModeChanged {
                         path: lf.path.clone(),
@@ -227,7 +235,19 @@ fn compute_diff(left: &[SnapshotFile], right: &[SnapshotFile]) -> DiffResult {
         ap.cmp(bp)
     });
 
-    modified.sort();
+    modified.sort_by(|a, b| {
+        let ap = if let DiffEntry::Modified { path, .. } = a {
+            path
+        } else {
+            unreachable!()
+        };
+        let bp = if let DiffEntry::Modified { path, .. } = b {
+            path
+        } else {
+            unreachable!()
+        };
+        ap.cmp(bp)
+    });
     mode_changed.sort_by(|a, b| {
         let ap = if let DiffEntry::ModeChanged { path, .. } = a {
             path
@@ -241,17 +261,12 @@ fn compute_diff(left: &[SnapshotFile], right: &[SnapshotFile]) -> DiffResult {
         };
         ap.cmp(bp)
     });
-    let modified_entries: Vec<DiffEntry> = modified
-        .into_iter()
-        .map(|path| DiffEntry::Modified { path })
-        .collect();
-
     let mut entries = Vec::new();
     entries.extend(renames);
     entries.extend(removed);
     entries.extend(added);
     entries.extend(mode_changed);
-    entries.extend(modified_entries);
+    entries.extend(modified);
 
     let identical = entries.is_empty();
     DiffResult { entries, identical }
@@ -358,8 +373,15 @@ mod tests {
         let left = write_snap(&dir, "left.gcl", &left_files);
         let right = write_snap(&dir, "right.gcl", &right_files);
         let result = diff_snapshots(&left, &right).unwrap();
-        assert!(result.entries.contains(&DiffEntry::Modified {
-            path: "a.txt".to_string()
+        assert!(result.entries.iter().any(|entry| {
+            matches!(
+                entry,
+                DiffEntry::Modified {
+                    path,
+                    old_sha256,
+                    new_sha256
+                } if path == "a.txt" && old_sha256 != new_sha256
+            )
         }));
     }
 
@@ -397,9 +419,10 @@ mod tests {
         let left = write_snap(&dir, "left.gcl", &left_files);
         let right = write_snap(&dir, "right.gcl", &right_files);
         let result = diff_snapshots(&left, &right).unwrap();
-        assert!(result.entries.contains(&DiffEntry::Modified {
-            path: "link".to_string()
-        }));
+        assert!(result
+            .entries
+            .iter()
+            .any(|entry| matches!(entry, DiffEntry::Modified { path, .. } if path == "link")));
     }
 
     #[test]
@@ -444,9 +467,9 @@ mod tests {
             result.entries
         );
         assert!(
-            !result.entries.contains(&DiffEntry::Modified {
-                path: "bin/tool.sh".to_string()
-            }),
+            !result.entries.iter().any(
+                |entry| matches!(entry, DiffEntry::Modified { path, .. } if path == "bin/tool.sh")
+            ),
             "mode-only change must not be reported as Modified"
         );
     }
