@@ -262,6 +262,20 @@ fn print_diff(entries: &[DiffEntry], json: bool) {
                         comma
                     );
                 }
+                DiffEntry::ModeChanged {
+                    path,
+                    old_mode,
+                    new_mode,
+                } => {
+                    println!(
+                        "  {{\"type\":\"mode_changed\",\"path\":{},\"old_mode\":{},\"new_mode\":{}}}{}",
+                        json_string(path),
+                        json_string(old_mode),
+                        json_string(new_mode),
+                        comma
+                    );
+                }
+                _ => {}
             }
         }
         println!("]");
@@ -274,6 +288,14 @@ fn print_diff(entries: &[DiffEntry], json: bool) {
                 DiffEntry::Renamed { old_path, new_path } => {
                     println!("R\t{old_path}\t->\t{new_path}")
                 }
+                DiffEntry::ModeChanged {
+                    path,
+                    old_mode,
+                    new_mode,
+                } => {
+                    println!("T\t{path}\t{old_mode}->{new_mode}")
+                }
+                _ => {}
             }
         }
     }

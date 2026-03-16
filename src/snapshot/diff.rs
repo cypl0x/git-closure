@@ -1,5 +1,5 @@
 /// Snapshot diffing: compare two `.gcl` files and report changes.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
@@ -12,6 +12,7 @@ use super::{Result, SnapshotFile};
 
 /// A single change entry produced by [`diff_snapshots`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DiffEntry {
     /// File exists in the right snapshot but not the left.
     Added { path: String },
@@ -22,6 +23,12 @@ pub enum DiffEntry {
     /// File was removed from `old_path` and appeared at `new_path` with the
     /// same SHA-256.  This is a heuristic: a true rename has identical content.
     Renamed { old_path: String, new_path: String },
+    /// File content is unchanged but Unix mode changed.
+    ModeChanged {
+        path: String,
+        old_mode: String,
+        new_mode: String,
+    },
 }
 
 /// Result of comparing two snapshots.
@@ -83,14 +90,34 @@ fn compute_diff(left: &[SnapshotFile], right: &[SnapshotFile]) -> DiffResult {
     // We build this incrementally after we know which right paths are "added".
     let mut candidates_removed: Vec<&SnapshotFile> = Vec::new();
     let mut candidates_added: Vec<&SnapshotFile> = Vec::new();
+    let mut mode_changed: Vec<DiffEntry> = Vec::new();
     let mut modified: Vec<String> = Vec::new();
+    let mut forced_added_paths: HashSet<&str> = HashSet::new();
 
     for lf in left {
         match right_map.get(lf.path.as_str()) {
             None => candidates_removed.push(lf),
             Some(&rf) => {
+                let left_is_symlink = lf.symlink_target.is_some();
+                let right_is_symlink = rf.symlink_target.is_some();
+
+                // Explicit design decision: regular<->symlink transitions are
+                // represented as Removed + Added (type replacement), not
+                // Modified/ModeChanged.
+                if left_is_symlink != right_is_symlink {
+                    candidates_removed.push(lf);
+                    forced_added_paths.insert(rf.path.as_str());
+                    continue;
+                }
+
                 if content_key(lf) != content_key(rf) {
                     modified.push(lf.path.clone());
+                } else if lf.mode != rf.mode {
+                    mode_changed.push(DiffEntry::ModeChanged {
+                        path: lf.path.clone(),
+                        old_mode: lf.mode.clone(),
+                        new_mode: rf.mode.clone(),
+                    });
                 }
                 // identical — skip
             }
@@ -98,7 +125,8 @@ fn compute_diff(left: &[SnapshotFile], right: &[SnapshotFile]) -> DiffResult {
     }
 
     for rf in right {
-        if !left_map.contains_key(rf.path.as_str()) {
+        if !left_map.contains_key(rf.path.as_str()) || forced_added_paths.contains(rf.path.as_str())
+        {
             candidates_added.push(rf);
         }
     }
@@ -200,6 +228,19 @@ fn compute_diff(left: &[SnapshotFile], right: &[SnapshotFile]) -> DiffResult {
     });
 
     modified.sort();
+    mode_changed.sort_by(|a, b| {
+        let ap = if let DiffEntry::ModeChanged { path, .. } = a {
+            path
+        } else {
+            unreachable!()
+        };
+        let bp = if let DiffEntry::ModeChanged { path, .. } = b {
+            path
+        } else {
+            unreachable!()
+        };
+        ap.cmp(bp)
+    });
     let modified_entries: Vec<DiffEntry> = modified
         .into_iter()
         .map(|path| DiffEntry::Modified { path })
@@ -209,6 +250,7 @@ fn compute_diff(left: &[SnapshotFile], right: &[SnapshotFile]) -> DiffResult {
     entries.extend(renames);
     entries.extend(removed);
     entries.extend(added);
+    entries.extend(mode_changed);
     entries.extend(modified_entries);
 
     let identical = entries.is_empty();
@@ -225,11 +267,15 @@ mod tests {
     use tempfile::TempDir;
 
     fn text_file(path: &str, content: &str) -> SnapshotFile {
+        text_file_mode(path, content, "644")
+    }
+
+    fn text_file_mode(path: &str, content: &str, mode: &str) -> SnapshotFile {
         let bytes = content.as_bytes().to_vec();
         SnapshotFile {
             path: path.to_string(),
             sha256: sha256_hex(&bytes),
-            mode: "644".to_string(),
+            mode: mode.to_string(),
             size: bytes.len() as u64,
             encoding: None,
             symlink_target: None,
@@ -376,6 +422,80 @@ mod tests {
             matches!(result.entries[0], DiffEntry::Renamed { .. }),
             "first entry must be Renamed, got {:?}",
             result.entries[0]
+        );
+    }
+
+    #[test]
+    fn diff_detects_mode_change_without_modified() {
+        let dir = TempDir::new().unwrap();
+        let left_files = vec![text_file_mode("bin/tool.sh", "echo hi\n", "644")];
+        let right_files = vec![text_file_mode("bin/tool.sh", "echo hi\n", "755")];
+        let left = write_snap(&dir, "left.gcl", &left_files);
+        let right = write_snap(&dir, "right.gcl", &right_files);
+
+        let result = diff_snapshots(&left, &right).unwrap();
+        assert!(
+            result.entries.contains(&DiffEntry::ModeChanged {
+                path: "bin/tool.sh".to_string(),
+                old_mode: "644".to_string(),
+                new_mode: "755".to_string(),
+            }),
+            "expected ModeChanged entry, got {:?}",
+            result.entries
+        );
+        assert!(
+            !result.entries.contains(&DiffEntry::Modified {
+                path: "bin/tool.sh".to_string()
+            }),
+            "mode-only change must not be reported as Modified"
+        );
+    }
+
+    #[test]
+    fn diff_rename_with_mode_change_stays_single_rename() {
+        let dir = TempDir::new().unwrap();
+        let left_files = vec![text_file_mode("old.sh", "echo hi\n", "644")];
+        let right_files = vec![text_file_mode("new.sh", "echo hi\n", "755")];
+        let left = write_snap(&dir, "left.gcl", &left_files);
+        let right = write_snap(&dir, "right.gcl", &right_files);
+
+        let result = diff_snapshots(&left, &right).unwrap();
+        assert!(
+            result.entries.contains(&DiffEntry::Renamed {
+                old_path: "old.sh".to_string(),
+                new_path: "new.sh".to_string(),
+            }),
+            "rename+mode-change should still report a rename"
+        );
+        assert!(
+            !result
+                .entries
+                .iter()
+                .any(|entry| matches!(entry, DiffEntry::ModeChanged { .. })),
+            "rename+mode-change should not emit an extra ModeChanged entry"
+        );
+    }
+
+    #[test]
+    fn diff_regular_to_symlink_is_reported_as_removed_plus_added() {
+        let dir = TempDir::new().unwrap();
+        let left_files = vec![text_file("path", "payload")];
+        let right_files = vec![symlink_file("path", "target.txt")];
+        let left = write_snap(&dir, "left.gcl", &left_files);
+        let right = write_snap(&dir, "right.gcl", &right_files);
+
+        let result = diff_snapshots(&left, &right).unwrap();
+        assert!(
+            result.entries.contains(&DiffEntry::Removed {
+                path: "path".to_string()
+            }),
+            "type change should include Removed"
+        );
+        assert!(
+            result.entries.contains(&DiffEntry::Added {
+                path: "path".to_string()
+            }),
+            "type change should include Added"
         );
     }
 }
