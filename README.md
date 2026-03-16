@@ -248,6 +248,11 @@ When `--output` is omitted, `build` derives a filename from the source:
 - `.` → `<current-directory-name>.gcl`
 - fallback for non-nameable sources: `snapshot.gcl`
 
+When `build` auto-derives the output path (no `--output`), it prints one
+stderr note:
+
+`note: writing snapshot to <path>`
+
 ### Provider Architecture (v0.1)
 
 `git-closure build` accepts either local paths or remote sources via a provider layer.
@@ -290,6 +295,22 @@ git-closure build github:NixOS/nixpkgs -o nixpkgs.gcl --provider nix
 This follows the Nix flake `git+file` expectation that local files are fetched "as long as they have been added to the Git repository" (Nix manual):
 
 https://nix.dev/manual/nix/stable/command-ref/new-cli/nix3-flake#types
+
+### Formatting and Integrity
+
+- `git-closure fmt <snapshot.gcl>` canonicalizes entry ordering and header layout.
+- By default, `fmt` refuses to rewrite parseable snapshots whose stored
+  `snapshot-hash` does not match recomputed content (`HashMismatch`).
+- Use `git-closure fmt --repair-hash <snapshot.gcl>` only when you explicitly
+  intend to re-canonicalize a tampered or stale hash header.
+
+### Exit Codes
+
+- `0`: success / no semantic differences (`diff` identical, `fmt --check` canonical).
+- `1`: semantic negative result (`diff` found differences, `fmt --check` noncanonical-valid).
+- `2`: integrity mismatch (`fmt --check` hash mismatch).
+- `3`: parse failure (`fmt --check` cannot parse snapshot).
+- `4`: operational failure (I/O, provider/subprocess, usage/runtime error paths in `run()`).
 
 ### Render / Export
 

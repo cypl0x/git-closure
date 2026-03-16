@@ -320,6 +320,7 @@ mod tests {
             file_count: sorted.len(),
             git_rev: None,
             git_branch: None,
+            extra_headers: Vec::new(),
         };
         let text = serialize_snapshot(&sorted, &header);
         let path = dir.path().join(name);

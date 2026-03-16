@@ -5,9 +5,9 @@ use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{generate, shells};
 
 use git_closure::{
-    build_snapshot_from_source, diff_snapshots, fmt_snapshot, list_snapshot, materialize_snapshot,
-    providers::ProviderKind, render_snapshot, verify_snapshot, BuildOptions, DiffEntry,
-    GitClosureError, ListEntry, RenderFormat,
+    build_snapshot_from_source, diff_snapshots, fmt_snapshot_with_options, list_snapshot,
+    materialize_snapshot, providers::ProviderKind, render_snapshot, verify_snapshot, BuildOptions,
+    DiffEntry, FmtOptions, GitClosureError, ListEntry, RenderFormat,
 };
 
 #[derive(Parser, Debug)]
@@ -83,6 +83,8 @@ enum Commands {
             help = "Check whether the snapshot is already canonical; exit non-zero if not"
         )]
         check: bool,
+        #[arg(long, help = "Allow recomputing a mismatched snapshot-hash")]
+        repair_hash: bool,
     },
     #[command(
         about = "Render a snapshot as a Markdown, HTML, or JSON audit report",
@@ -148,7 +150,7 @@ impl From<BuildProvider> for ProviderKind {
 fn main() {
     if let Err(e) = run() {
         eprintln!("error: {e}");
-        process::exit(1);
+        process::exit(4);
     }
 }
 
@@ -209,8 +211,33 @@ fn run() -> Result<(), GitClosureError> {
                 process::exit(1);
             }
         }
-        Commands::Fmt { snapshot, check } => {
-            let canonical = fmt_snapshot(&snapshot)?;
+        Commands::Fmt {
+            snapshot,
+            check,
+            repair_hash,
+        } => {
+            let canonical = match fmt_snapshot_with_options(&snapshot, FmtOptions { repair_hash }) {
+                Ok(canonical) => canonical,
+                Err(GitClosureError::HashMismatch { .. }) if check => {
+                    eprintln!(
+                        "error: {} has an integrity mismatch between stored and recomputed snapshot-hash",
+                        snapshot.display()
+                    );
+                    process::exit(2);
+                }
+                Err(
+                    GitClosureError::Parse(_)
+                    | GitClosureError::MissingHeader(_)
+                    | GitClosureError::LegacyHeader,
+                ) if check => {
+                    eprintln!(
+                        "error: {} is not parseable as a snapshot",
+                        snapshot.display()
+                    );
+                    process::exit(3);
+                }
+                Err(err) => return Err(err),
+            };
             if check {
                 let current = std::fs::read_to_string(&snapshot).map_err(GitClosureError::from)?;
                 if current != canonical {

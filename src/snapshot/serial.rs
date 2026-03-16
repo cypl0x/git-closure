@@ -29,6 +29,9 @@ pub(crate) fn serialize_snapshot(files: &[SnapshotFile], header: &SnapshotHeader
     if let Some(branch) = &header.git_branch {
         output.push_str(&format!(";; git-branch: {branch}\n"));
     }
+    for (key, value) in &header.extra_headers {
+        output.push_str(&format!(";; {key}: {value}\n"));
+    }
     output.push('\n');
     output.push_str("(\n");
 
@@ -121,6 +124,7 @@ fn split_header_body(input: &str) -> Result<(SnapshotHeader, &str)> {
     let mut file_count = None;
     let mut git_rev = None;
     let mut git_branch = None;
+    let mut extra_headers = Vec::new();
     let mut body_start = None;
     let mut cursor = 0usize;
 
@@ -143,6 +147,20 @@ fn split_header_body(input: &str) -> Result<(SnapshotHeader, &str)> {
             }
             if let Some(value) = line.strip_prefix(";; git-branch:") {
                 git_branch = Some(value.trim().to_string());
+            }
+            if let Some(rest) = line.strip_prefix(";; ") {
+                if let Some((raw_key, raw_value)) = rest.split_once(':') {
+                    let key = raw_key.trim();
+                    if key != "snapshot-hash"
+                        && key != "file-count"
+                        && key != "git-rev"
+                        && key != "git-branch"
+                        && key != "format-hash"
+                        && !key.is_empty()
+                    {
+                        extra_headers.push((key.to_string(), raw_value.trim().to_string()));
+                    }
+                }
             }
             cursor += line_len + 1;
             continue;
@@ -169,6 +187,7 @@ fn split_header_body(input: &str) -> Result<(SnapshotHeader, &str)> {
             file_count,
             git_rev,
             git_branch,
+            extra_headers,
         },
         body,
     ))
@@ -387,11 +406,27 @@ pub fn list_snapshot(snapshot: &Path) -> Result<Vec<ListEntry>> {
 /// produce for the same content — modulo the structural hash which is
 /// recomputed from the parsed file list.  Use `--check` mode in the `fmt`
 /// subcommand to detect snapshots that are not yet in canonical form.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FmtOptions {
+    pub repair_hash: bool,
+}
+
 pub fn fmt_snapshot(snapshot: &Path) -> Result<String> {
+    fmt_snapshot_with_options(snapshot, FmtOptions::default())
+}
+
+pub fn fmt_snapshot_with_options(snapshot: &Path, options: FmtOptions) -> Result<String> {
     let text = fs::read_to_string(snapshot).map_err(|err| io_error_with_path(err, snapshot))?;
     let (mut header, mut files) = parse_snapshot(&text)?;
     files.sort_by(|a, b| a.path.cmp(&b.path));
-    header.snapshot_hash = super::hash::compute_snapshot_hash(&files);
+    let computed_hash = super::hash::compute_snapshot_hash(&files);
+    if header.snapshot_hash != computed_hash && !options.repair_hash {
+        return Err(GitClosureError::HashMismatch {
+            expected: header.snapshot_hash,
+            actual: computed_hash,
+        });
+    }
+    header.snapshot_hash = computed_hash;
     header.file_count = files.len();
     Ok(serialize_snapshot(&files, &header))
 }
@@ -408,6 +443,7 @@ mod tests {
             file_count: files.len(),
             git_rev: None,
             git_branch: None,
+            extra_headers: Vec::new(),
         }
     }
 
@@ -602,6 +638,84 @@ mod tests {
         );
     }
 
+    #[test]
+    fn fmt_snapshot_preserves_unknown_headers_in_order() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let file = make_text_file("a.txt", "a");
+        let files = vec![file];
+        let header = make_header(&files);
+        let mut text = serialize_snapshot(&files, &header);
+        text = text.replacen(
+            ";; file-count: 1\n",
+            ";; file-count: 1\n;; source-uri: gh:owner/repo@main\n;; x-custom: abc\n",
+            1,
+        );
+
+        let dir = TempDir::new().unwrap();
+        let snap = dir.path().join("snap.gcl");
+        fs::write(&snap, text.as_bytes()).unwrap();
+
+        let formatted = fmt_snapshot(&snap).expect("fmt_snapshot must succeed");
+        let source_pos = formatted
+            .find(";; source-uri: gh:owner/repo@main")
+            .expect("source-uri header retained");
+        let custom_pos = formatted
+            .find(";; x-custom: abc")
+            .expect("x-custom header retained");
+        assert!(
+            source_pos < custom_pos,
+            "unknown headers must keep input order"
+        );
+
+        fs::write(&snap, formatted.as_bytes()).unwrap();
+        let formatted_again = fmt_snapshot(&snap).expect("second fmt_snapshot must succeed");
+        assert_eq!(formatted_again, formatted, "fmt(fmt(x)) must be idempotent");
+    }
+
+    #[test]
+    fn fmt_snapshot_rejects_hash_mismatch_by_default() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let file = make_text_file("a.txt", "a");
+        let mut header = make_header(std::slice::from_ref(&file));
+        header.snapshot_hash =
+            "0000000000000000000000000000000000000000000000000000000000000000".to_string();
+        let text = serialize_snapshot(std::slice::from_ref(&file), &header);
+
+        let dir = TempDir::new().unwrap();
+        let snap = dir.path().join("tampered.gcl");
+        fs::write(&snap, text.as_bytes()).unwrap();
+
+        let err = fmt_snapshot(&snap).expect_err("fmt must reject hash mismatch by default");
+        assert!(matches!(err, GitClosureError::HashMismatch { .. }));
+    }
+
+    #[test]
+    fn fmt_snapshot_repair_hash_allows_recanonicalization() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let file = make_text_file("a.txt", "a");
+        let mut header = make_header(std::slice::from_ref(&file));
+        header.snapshot_hash =
+            "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_string();
+        let text = serialize_snapshot(std::slice::from_ref(&file), &header);
+
+        let dir = TempDir::new().unwrap();
+        let snap = dir.path().join("repair.gcl");
+        fs::write(&snap, text.as_bytes()).unwrap();
+
+        let repaired = fmt_snapshot_with_options(&snap, FmtOptions { repair_hash: true })
+            .expect("fmt --repair-hash should succeed");
+        assert!(
+            !repaired.contains("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"),
+            "repaired output must contain a recomputed hash"
+        );
+    }
+
     // ── git metadata header tests (T-32) ─────────────────────────────────────
 
     #[test]
@@ -614,6 +728,7 @@ mod tests {
             file_count: files.len(),
             git_rev: Some("deadbeef1234567890abcdef1234567890abcdef".to_string()),
             git_branch: Some("main".to_string()),
+            extra_headers: Vec::new(),
         };
         let text = serialize_snapshot(&files, &header);
         assert!(
@@ -637,12 +752,14 @@ mod tests {
             file_count: files.len(),
             git_rev: None,
             git_branch: None,
+            extra_headers: Vec::new(),
         };
         let header_with_meta = SnapshotHeader {
             snapshot_hash: hash.clone(),
             file_count: files.len(),
             git_rev: Some("abc123".to_string()),
             git_branch: Some("feature-branch".to_string()),
+            extra_headers: Vec::new(),
         };
 
         let text_without = serialize_snapshot(&files, &header_without_meta);
@@ -679,6 +796,7 @@ mod tests {
             file_count: files.len(),
             git_rev: Some("cafebabe".to_string()),
             git_branch: Some("release/v1".to_string()),
+            extra_headers: Vec::new(),
         };
         let text = serialize_snapshot(&files, &header);
 

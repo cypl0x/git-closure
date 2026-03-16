@@ -1,3 +1,3 @@
 bin.name = "git-closure"
 args = ["diff", "same-a.gcl", "single.gcl", "--stat"]
-status = "failed"
+status.code = 1

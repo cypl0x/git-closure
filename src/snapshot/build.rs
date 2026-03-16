@@ -80,6 +80,7 @@ pub fn build_snapshot_with_options(
         file_count: files.len(),
         git_rev,
         git_branch,
+        extra_headers: Vec::new(),
     };
     let serialized = serialize_snapshot(&files, &header);
 

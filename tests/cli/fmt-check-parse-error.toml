@@ -1,0 +1,3 @@
+bin.name = "git-closure"
+args = ["fmt", "bad.gcl", "--check"]
+status.code = 3

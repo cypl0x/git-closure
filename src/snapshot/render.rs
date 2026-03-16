@@ -277,6 +277,7 @@ mod tests {
             file_count: sorted.len(),
             git_rev: git_rev.map(str::to_string),
             git_branch: git_branch.map(str::to_string),
+            extra_headers: Vec::new(),
         };
         let text = serialize_snapshot(&sorted, &header);
         let path = dir.path().join("snap.gcl");

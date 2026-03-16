@@ -1,0 +1,3 @@
+bin.name = "git-closure"
+args = ["fmt", "hash-mismatch.gcl", "--repair-hash"]
+status = "success"

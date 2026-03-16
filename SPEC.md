@@ -260,12 +260,14 @@ constraints (see `UnsafePath` error).
 
 A snapshot is in **canonical form** when:
 
-1. The header contains exactly the required fields plus any optional fields
-   captured at build time, in the order: version comment, `snapshot-hash`,
-   `file-count`, then optional fields.
-2. File entries are in strict lexicographic ascending path order.
-3. The `snapshot-hash` matches the recomputed hash of the file list.
-4. The `file-count` matches the number of entries.
+1. The header emits known structural fields in canonical order: version
+   comment (if present), `snapshot-hash`, `file-count`, optional `git-rev`,
+   optional `git-branch`.
+2. Any unknown `;; key: value` headers captured during parsing are preserved
+   and emitted **after** known fields, in their original relative order.
+3. File entries are in strict lexicographic ascending path order.
+4. The `snapshot-hash` matches the recomputed hash of the file list.
+5. The `file-count` matches the number of entries.
 
 The `git-closure fmt` subcommand produces canonical form.  The
 `git-closure fmt --check` subcommand exits non-zero if the file is not in

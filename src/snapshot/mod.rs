@@ -30,7 +30,7 @@ pub(crate) struct SnapshotFile {
 
 /// Parsed representation of the `;;`-comment header block at the top of a
 /// `.gcl` file.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct SnapshotHeader {
     pub(crate) snapshot_hash: String,
     pub(crate) file_count: usize,
@@ -40,6 +40,8 @@ pub(crate) struct SnapshotHeader {
     /// Short branch name captured from the source git repository at build time.
     /// Informational only — not included in `snapshot_hash`.
     pub(crate) git_branch: Option<String>,
+    /// Unknown `;; key: value` comments preserved for forward compatibility.
+    pub(crate) extra_headers: Vec<(String, String)>,
 }
 
 /// Options that influence which files are included in a snapshot build.
