@@ -14,6 +14,7 @@
         rustToolchain = with pkgs; [
           cargo
           rustc
+          clippy
           rust-analyzer
         ];
 
