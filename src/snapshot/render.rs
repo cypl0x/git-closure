@@ -2,6 +2,8 @@
 use std::fs;
 use std::path::Path;
 
+use serde::Serialize;
+
 use crate::utils::io_error_with_path;
 
 use super::serial::parse_snapshot;
@@ -167,42 +169,32 @@ fn render_json(header: &SnapshotHeader, entries: &[ListEntry]) -> String {
     let (regular_count, symlink_count) = count_entry_types(entries);
     let total_bytes: u64 = entries.iter().map(|e| e.size).sum();
 
-    let mut out = String::new();
-    out.push_str("{\n");
-    out.push_str(&format!(
-        "  \"snapshot_hash\": {},\n",
-        json_string(&header.snapshot_hash)
-    ));
-    out.push_str(&format!("  \"file_count\": {},\n", header.file_count));
-    match &header.git_rev {
-        Some(rev) => out.push_str(&format!("  \"git_rev\": {},\n", json_string(rev))),
-        None => out.push_str("  \"git_rev\": null,\n"),
-    }
-    match &header.git_branch {
-        Some(b) => out.push_str(&format!("  \"git_branch\": {},\n", json_string(b))),
-        None => out.push_str("  \"git_branch\": null,\n"),
-    }
-    out.push_str(&format!("  \"regular_file_count\": {regular_count},\n"));
-    out.push_str(&format!("  \"symlink_count\": {symlink_count},\n"));
-    out.push_str(&format!("  \"total_bytes\": {total_bytes},\n"));
-    out.push_str("  \"files\": [\n");
-    for (i, e) in entries.iter().enumerate() {
-        let comma = if i + 1 < entries.len() { "," } else { "" };
-        let entry_type = if e.is_symlink { "symlink" } else { "file" };
-        out.push_str("    {\n");
-        out.push_str(&format!("      \"path\": {},\n", json_string(&e.path)));
-        out.push_str(&format!("      \"type\": {},\n", json_string(entry_type)));
-        out.push_str(&format!("      \"mode\": {},\n", json_string(&e.mode)));
-        out.push_str(&format!("      \"size\": {},\n", e.size));
-        out.push_str(&format!("      \"sha256\": {},\n", json_string(&e.sha256)));
-        match &e.symlink_target {
-            Some(t) => out.push_str(&format!("      \"symlink_target\": {}\n", json_string(t))),
-            None => out.push_str("      \"symlink_target\": null\n"),
-        }
-        out.push_str(&format!("    }}{comma}\n"));
-    }
-    out.push_str("  ]\n}\n");
-    out
+    let files: Vec<RenderJsonFile<'_>> = entries
+        .iter()
+        .map(|entry| RenderJsonFile {
+            path: entry.path.as_str(),
+            entry_type: if entry.is_symlink { "symlink" } else { "file" },
+            mode: entry.mode.as_str(),
+            size: entry.size,
+            sha256: entry.sha256.as_str(),
+            symlink_target: entry.symlink_target.as_deref(),
+        })
+        .collect();
+
+    let payload = RenderJson {
+        snapshot_hash: header.snapshot_hash.as_str(),
+        file_count: header.file_count,
+        git_rev: header.git_rev.as_deref(),
+        git_branch: header.git_branch.as_deref(),
+        regular_file_count: regular_count,
+        symlink_count,
+        total_bytes,
+        files,
+    };
+
+    let mut json = serde_json::to_string_pretty(&payload).expect("serialize render JSON");
+    json.push('\n');
+    json
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -223,22 +215,27 @@ fn md_escape(s: &str) -> String {
     s.replace('|', "\\|").replace('`', "\\`")
 }
 
-fn json_string(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for ch in s.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
+#[derive(Debug, Serialize)]
+struct RenderJson<'a> {
+    snapshot_hash: &'a str,
+    file_count: usize,
+    git_rev: Option<&'a str>,
+    git_branch: Option<&'a str>,
+    regular_file_count: usize,
+    symlink_count: usize,
+    total_bytes: u64,
+    files: Vec<RenderJsonFile<'a>>,
+}
+
+#[derive(Debug, Serialize)]
+struct RenderJsonFile<'a> {
+    path: &'a str,
+    #[serde(rename = "type")]
+    entry_type: &'a str,
+    mode: &'a str,
+    size: u64,
+    sha256: &'a str,
+    symlink_target: Option<&'a str>,
 }
 
 #[cfg(test)]
@@ -341,18 +338,14 @@ mod tests {
         let snap = write_snap(&dir, &files, Some("abc"), Some("dev"));
 
         let output = render_snapshot(&snap, RenderFormat::Json).unwrap();
-        assert!(
-            output.contains("\"snapshot_hash\""),
-            "must have snapshot_hash"
-        );
-        assert!(output.contains("\"file_count\": 2"), "must have file_count");
-        assert!(output.contains("\"git_rev\": \"abc\""), "must have git_rev");
-        assert!(
-            output.contains("\"git_branch\": \"dev\""),
-            "must have git_branch"
-        );
-        assert!(output.contains("\"total_bytes\""), "must have total_bytes");
-        assert!(output.contains("\"a.txt\""), "must list files");
+        let value: serde_json::Value = serde_json::from_str(&output).expect("json must parse");
+        assert_eq!(value["file_count"], serde_json::Value::from(2));
+        assert_eq!(value["git_rev"], serde_json::Value::from("abc"));
+        assert_eq!(value["git_branch"], serde_json::Value::from("dev"));
+        assert!(value["total_bytes"].is_u64());
+        let files = value["files"].as_array().expect("files must be an array");
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0]["path"], serde_json::Value::from("a.txt"));
     }
 
     #[test]

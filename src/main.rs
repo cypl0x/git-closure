@@ -3,6 +3,7 @@ use std::{io, process};
 
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{generate, shells};
+use serde::Serialize;
 
 use git_closure::{
     build_snapshot_from_source, diff_snapshots, fmt_snapshot_with_options, list_snapshot,
@@ -267,62 +268,7 @@ fn run() -> Result<(), GitClosureError> {
 
 fn print_diff(entries: &[DiffEntry], json: bool) {
     if json {
-        println!("[");
-        for (i, e) in entries.iter().enumerate() {
-            let comma = if i + 1 < entries.len() { "," } else { "" };
-            match e {
-                DiffEntry::Added { path } => {
-                    println!(
-                        "  {{\"type\":\"added\",\"path\":{}}}{}",
-                        json_string(path),
-                        comma
-                    );
-                }
-                DiffEntry::Removed { path } => {
-                    println!(
-                        "  {{\"type\":\"removed\",\"path\":{}}}{}",
-                        json_string(path),
-                        comma
-                    );
-                }
-                DiffEntry::Modified {
-                    path,
-                    old_sha256,
-                    new_sha256,
-                } => {
-                    println!(
-                        "  {{\"type\":\"modified\",\"path\":{},\"old_sha256\":{},\"new_sha256\":{}}}{}",
-                        json_string(path),
-                        json_string(old_sha256),
-                        json_string(new_sha256),
-                        comma
-                    );
-                }
-                DiffEntry::Renamed { old_path, new_path } => {
-                    println!(
-                        "  {{\"type\":\"renamed\",\"old_path\":{},\"new_path\":{}}}{}",
-                        json_string(old_path),
-                        json_string(new_path),
-                        comma
-                    );
-                }
-                DiffEntry::ModeChanged {
-                    path,
-                    old_mode,
-                    new_mode,
-                } => {
-                    println!(
-                        "  {{\"type\":\"mode_changed\",\"path\":{},\"old_mode\":{},\"new_mode\":{}}}{}",
-                        json_string(path),
-                        json_string(old_mode),
-                        json_string(new_mode),
-                        comma
-                    );
-                }
-                _ => {}
-            }
-        }
-        println!("]");
+        println!("{}", diff_entries_json(entries));
     } else {
         for e in entries {
             match e {
@@ -380,34 +326,7 @@ fn print_diff_stat(entries: &[DiffEntry]) {
 
 fn print_list(entries: &[ListEntry], json: bool, long: bool) {
     if json {
-        if long {
-            println!("[");
-            for (i, e) in entries.iter().enumerate() {
-                let comma = if i + 1 < entries.len() { "," } else { "" };
-                let entry_type = if e.is_symlink { "symlink" } else { "file" };
-                println!(
-                    "  {{\"path\":{},\"type\":{},\"size\":{},\"mode\":{},\"sha256\":{},\"symlink_target\":{}}}{}",
-                    json_string(&e.path),
-                    json_string(entry_type),
-                    e.size,
-                    json_string(&e.mode),
-                    json_string(&e.sha256),
-                    match &e.symlink_target {
-                        Some(t) => json_string(t),
-                        None => "null".to_string(),
-                    },
-                    comma
-                );
-            }
-            println!("]");
-        } else {
-            println!("[");
-            for (i, e) in entries.iter().enumerate() {
-                let comma = if i + 1 < entries.len() { "," } else { "" };
-                println!("  {}{}", json_string(&e.path), comma);
-            }
-            println!("]");
-        }
+        println!("{}", list_entries_json(entries, long));
     } else if long {
         for e in entries {
             let entry_type = if e.is_symlink { "symlink" } else { "file" };
@@ -425,24 +344,93 @@ fn print_list(entries: &[ListEntry], json: bool, long: bool) {
     }
 }
 
-fn json_string(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for ch in s.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => {
-                out.push_str(&format!("\\u{:04x}", c as u32));
-            }
-            c => out.push(c),
-        }
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum DiffJsonEntry {
+    Added {
+        path: String,
+    },
+    Removed {
+        path: String,
+    },
+    Modified {
+        path: String,
+        old_sha256: String,
+        new_sha256: String,
+    },
+    Renamed {
+        old_path: String,
+        new_path: String,
+    },
+    ModeChanged {
+        path: String,
+        old_mode: String,
+        new_mode: String,
+    },
+}
+
+fn diff_entries_json(entries: &[DiffEntry]) -> String {
+    let payload: Vec<DiffJsonEntry> = entries
+        .iter()
+        .filter_map(|entry| match entry {
+            DiffEntry::Added { path } => Some(DiffJsonEntry::Added { path: path.clone() }),
+            DiffEntry::Removed { path } => Some(DiffJsonEntry::Removed { path: path.clone() }),
+            DiffEntry::Modified {
+                path,
+                old_sha256,
+                new_sha256,
+            } => Some(DiffJsonEntry::Modified {
+                path: path.clone(),
+                old_sha256: old_sha256.clone(),
+                new_sha256: new_sha256.clone(),
+            }),
+            DiffEntry::Renamed { old_path, new_path } => Some(DiffJsonEntry::Renamed {
+                old_path: old_path.clone(),
+                new_path: new_path.clone(),
+            }),
+            DiffEntry::ModeChanged {
+                path,
+                old_mode,
+                new_mode,
+            } => Some(DiffJsonEntry::ModeChanged {
+                path: path.clone(),
+                old_mode: old_mode.clone(),
+                new_mode: new_mode.clone(),
+            }),
+            _ => None,
+        })
+        .collect();
+    serde_json::to_string_pretty(&payload).expect("serialize diff JSON")
+}
+
+#[derive(Debug, Serialize)]
+struct ListJsonEntry {
+    path: String,
+    r#type: &'static str,
+    size: u64,
+    mode: String,
+    sha256: String,
+    symlink_target: Option<String>,
+}
+
+fn list_entries_json(entries: &[ListEntry], long: bool) -> String {
+    if long {
+        let payload: Vec<ListJsonEntry> = entries
+            .iter()
+            .map(|entry| ListJsonEntry {
+                path: entry.path.clone(),
+                r#type: if entry.is_symlink { "symlink" } else { "file" },
+                size: entry.size,
+                mode: entry.mode.clone(),
+                sha256: entry.sha256.clone(),
+                symlink_target: entry.symlink_target.clone(),
+            })
+            .collect();
+        serde_json::to_string_pretty(&payload).expect("serialize list JSON")
+    } else {
+        let paths: Vec<&str> = entries.iter().map(|entry| entry.path.as_str()).collect();
+        serde_json::to_string_pretty(&paths).expect("serialize list JSON paths")
     }
-    out.push('"');
-    out
 }
 
 // ── Output filename derivation (T-31) ─────────────────────────────────────────
@@ -512,7 +500,9 @@ fn print_completion(shell: CompletionShell) {
 
 #[cfg(test)]
 mod tests {
-    use super::derive_output_path;
+    use super::{derive_output_path, diff_entries_json, list_entries_json};
+    use git_closure::{DiffEntry, ListEntry};
+    use serde_json::Value;
     use std::path::PathBuf;
     use std::sync::Mutex;
 
@@ -569,5 +559,65 @@ mod tests {
         std::env::set_current_dir(original).expect("restore cwd");
 
         assert_eq!(derived, PathBuf::from("myproj.gcl"));
+    }
+
+    #[test]
+    fn diff_entries_json_round_trips_with_serde_json() {
+        let entries = vec![
+            DiffEntry::Modified {
+                path: "a.txt".to_string(),
+                old_sha256: "oldhash".to_string(),
+                new_sha256: "newhash".to_string(),
+            },
+            DiffEntry::ModeChanged {
+                path: "script.sh".to_string(),
+                old_mode: "644".to_string(),
+                new_mode: "755".to_string(),
+            },
+        ];
+
+        let json = diff_entries_json(&entries);
+        let value: Value = serde_json::from_str(&json).expect("diff JSON must parse");
+        let arr = value.as_array().expect("diff JSON must be an array");
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["type"], Value::String("modified".to_string()));
+        assert_eq!(arr[0]["path"], Value::String("a.txt".to_string()));
+        assert_eq!(arr[1]["type"], Value::String("mode_changed".to_string()));
+    }
+
+    #[test]
+    fn list_entries_json_round_trips_with_serde_json() {
+        let entries = vec![
+            ListEntry {
+                path: "a.txt".to_string(),
+                is_symlink: false,
+                symlink_target: None,
+                sha256: "abc".to_string(),
+                mode: "644".to_string(),
+                size: 3,
+            },
+            ListEntry {
+                path: "link".to_string(),
+                is_symlink: true,
+                symlink_target: Some("a.txt".to_string()),
+                sha256: String::new(),
+                mode: "120000".to_string(),
+                size: 0,
+            },
+        ];
+
+        let short_json = list_entries_json(&entries, false);
+        let short_value: Value =
+            serde_json::from_str(&short_json).expect("short list JSON must parse");
+        assert_eq!(short_value[0], Value::String("a.txt".to_string()));
+
+        let long_json = list_entries_json(&entries, true);
+        let long_value: Value =
+            serde_json::from_str(&long_json).expect("long list JSON must parse");
+        assert_eq!(long_value[1]["type"], Value::String("symlink".to_string()));
+        assert_eq!(
+            long_value[1]["symlink_target"],
+            Value::String("a.txt".to_string())
+        );
     }
 }
