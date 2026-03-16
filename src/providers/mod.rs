@@ -430,6 +430,11 @@ mod tests {
             Err(err) => err,
         };
 
+        // On systems without the `nix` binary the error is CommandSpawnFailed
+        // (ENOENT).  On systems with `nix`, the path does not exist so it
+        // exits non-zero → CommandExitFailure.  Both are acceptable outcomes
+        // for this test; what we assert is that the error correctly identifies
+        // the `nix` command and does not silently succeed.
         match err {
             GitClosureError::CommandExitFailure {
                 command, stderr, ..
@@ -440,7 +445,11 @@ mod tests {
                     "stderr should be captured for nix exit failure"
                 );
             }
-            other => panic!("expected CommandExitFailure, got {other:?}"),
+            GitClosureError::CommandSpawnFailed { command, .. } => {
+                // nix binary is not installed; spawn failure is the expected path.
+                assert_eq!(command, "nix");
+            }
+            other => panic!("expected CommandExitFailure or CommandSpawnFailed, got {other:?}"),
         }
     }
 }
