@@ -20,6 +20,8 @@ pub enum ProviderKind {
 
 pub struct FetchedSource {
     pub root: PathBuf,
+    // TempDir does not implement Debug; keep field private and suppress the
+    // derive — Debug is only needed for test assertions on the Err branch.
     _tempdir: Option<TempDir>,
 }
 
@@ -191,13 +193,13 @@ impl Provider for NixProvider {
 pub struct GithubApiProvider;
 
 impl Provider for GithubApiProvider {
-    fn fetch(&self, source: &str) -> Result<FetchedSource> {
-        eprintln!(
-            "warning: --provider github-api is not yet implemented; falling back to git clone"
-        );
+    fn fetch(&self, _source: &str) -> Result<FetchedSource> {
         // TODO: implement GitHub tarball fetch via GET /repos/{owner}/{repo}/tarball/{ref}.
-        let git_provider = GitCloneProvider;
-        git_provider.fetch(source)
+        Err(GitClosureError::Parse(
+            "--provider github-api is not yet implemented; \
+             use --provider git-clone or omit --provider for auto-detection"
+                .to_string(),
+        ))
     }
 }
 
@@ -442,5 +444,24 @@ mod tests {
             }
             other => panic!("expected CommandExitFailure or CommandSpawnFailed, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn github_api_provider_returns_not_implemented_error() {
+        use super::GithubApiProvider;
+        let provider = GithubApiProvider;
+        let err = match provider.fetch("owner/repo") {
+            Ok(_) => panic!("GithubApiProvider must return an error until implemented"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(err, GitClosureError::Parse(_)),
+            "expected Parse(not-implemented), got {err:?}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not implemented") || msg.contains("github-api"),
+            "error message must mention 'not implemented' or 'github-api', got: {msg:?}"
+        );
     }
 }
