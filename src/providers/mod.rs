@@ -66,7 +66,7 @@ pub fn fetch_source(source: &str, provider_kind: ProviderKind) -> Result<Fetched
             }
 
             if looks_like_github_source(source) {
-                return github_api.fetch(source);
+                return git.fetch(source);
             }
 
             git.fetch(source)
@@ -303,8 +303,8 @@ pub(crate) fn run_command_status(
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_git_source, parse_nix_metadata_path, run_command_output, run_command_status,
-        split_repo_ref, GitCloneProvider, NixProvider, Provider,
+        fetch_source, parse_git_source, parse_nix_metadata_path, run_command_output,
+        run_command_status, split_repo_ref, GitCloneProvider, NixProvider, Provider, ProviderKind,
     };
     use crate::error::GitClosureError;
     use crate::utils::truncate_stderr;
@@ -470,5 +470,64 @@ mod tests {
             msg.contains("not implemented") || msg.contains("github-api"),
             "error message must mention 'not implemented' or 'github-api', got: {msg:?}"
         );
+    }
+
+    #[test]
+    fn auto_provider_gh_shorthand_does_not_hit_unimplemented_github_api() {
+        let err = match fetch_source("gh:owner/repo", ProviderKind::Auto) {
+            Ok(_) => return,
+            Err(err) => err,
+        };
+
+        match err {
+            GitClosureError::CommandExitFailure { command, .. }
+            | GitClosureError::CommandSpawnFailed { command, .. } => {
+                assert_eq!(command, "git");
+            }
+            GitClosureError::Parse(msg) => {
+                assert!(
+                    !msg.contains("github-api") && !msg.contains("not implemented"),
+                    "auto gh source must not route to unimplemented github-api: {msg:?}"
+                );
+            }
+            other => panic!("unexpected error kind for auto gh source: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn auto_provider_github_https_does_not_hit_unimplemented_github_api() {
+        let err = match fetch_source("https://github.com/owner/repo", ProviderKind::Auto) {
+            Ok(_) => return,
+            Err(err) => err,
+        };
+
+        match err {
+            GitClosureError::CommandExitFailure { command, .. }
+            | GitClosureError::CommandSpawnFailed { command, .. } => {
+                assert_eq!(command, "git");
+            }
+            GitClosureError::Parse(msg) => {
+                assert!(
+                    !msg.contains("github-api") && !msg.contains("not implemented"),
+                    "auto github https source must not route to unimplemented github-api: {msg:?}"
+                );
+            }
+            other => panic!("unexpected error kind for auto github https source: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn auto_provider_github_prefix_is_still_treated_as_nix_flake_ref() {
+        let err = match fetch_source("github:owner/repo", ProviderKind::Auto) {
+            Ok(_) => return,
+            Err(err) => err,
+        };
+        match err {
+            GitClosureError::CommandExitFailure { command, .. }
+            | GitClosureError::CommandSpawnFailed { command, .. } => {
+                assert_eq!(command, "nix");
+            }
+            other => panic!("expected nix-command failure path for github: refs, got {other:?}"),
+        }
     }
 }
