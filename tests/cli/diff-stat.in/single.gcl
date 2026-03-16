@@ -1,0 +1,7 @@
+;; git-closure snapshot v0.1
+;; snapshot-hash: 7966501418894b02de5440687eda89c8ef807eee3536217f5037aecfefa8c9e3
+;; file-count: 1
+
+(
+  ((:path "x.txt" :sha256 "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881" :mode "644" :size 1) "x")
+)

@@ -8,4 +8,5 @@ Arguments:
 
 Options:
       --json  Output JSON
+      --stat  Output summary counts only
   -h, --help  Print help

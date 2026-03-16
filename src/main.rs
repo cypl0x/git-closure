@@ -69,8 +69,10 @@ enum Commands {
         left: PathBuf,
         #[arg(help = "Right (new) snapshot")]
         right: PathBuf,
-        #[arg(long, help = "Output JSON")]
+        #[arg(long, help = "Output JSON", conflicts_with = "stat")]
         json: bool,
+        #[arg(long, help = "Output summary counts only")]
+        stat: bool,
     },
     #[command(about = "Canonically reformat a snapshot file", visible_alias = "f")]
     Fmt {
@@ -191,9 +193,18 @@ fn run() -> Result<(), GitClosureError> {
             let entries = list_snapshot(&snapshot)?;
             print_list(&entries, json, long);
         }
-        Commands::Diff { left, right, json } => {
+        Commands::Diff {
+            left,
+            right,
+            json,
+            stat,
+        } => {
             let result = diff_snapshots(&left, &right)?;
-            print_diff(&result.entries, json);
+            if stat {
+                print_diff_stat(&result.entries);
+            } else {
+                print_diff(&result.entries, json);
+            }
             if !result.identical {
                 process::exit(1);
             }
@@ -299,6 +310,33 @@ fn print_diff(entries: &[DiffEntry], json: bool) {
             }
         }
     }
+}
+
+fn print_diff_stat(entries: &[DiffEntry]) {
+    let mut added = 0usize;
+    let mut removed = 0usize;
+    let mut modified = 0usize;
+    let mut mode_changed = 0usize;
+    let mut renamed = 0usize;
+
+    for entry in entries {
+        match entry {
+            DiffEntry::Added { .. } => added += 1,
+            DiffEntry::Removed { .. } => removed += 1,
+            DiffEntry::Modified { .. } => modified += 1,
+            DiffEntry::ModeChanged { .. } => mode_changed += 1,
+            DiffEntry::Renamed { .. } => renamed += 1,
+            _ => {}
+        }
+    }
+
+    let total = added + removed + modified + mode_changed + renamed;
+    println!("added:        {added}");
+    println!("removed:      {removed}");
+    println!("modified:     {modified}");
+    println!("mode_changed: {mode_changed}");
+    println!("renamed:      {renamed}");
+    println!("total:        {total}");
 }
 
 fn print_list(entries: &[ListEntry], json: bool, long: bool) {
