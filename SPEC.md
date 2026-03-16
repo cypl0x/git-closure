@@ -191,13 +191,20 @@ order as the body.
 
 For each file entry, the following fields are hashed in order:
 
-1. Entry type — `"file"` or `"symlink"` (UTF-8, length-prefixed)
+1. Entry type — `"regular"` or `"symlink"` (UTF-8, length-prefixed)
 2. `:path` value (UTF-8, length-prefixed)
-3. `:mode` value (UTF-8, length-prefixed)
-4. `:sha256` value (UTF-8, length-prefixed, empty string for symlinks)
 
-**Length prefix:** a 64-bit little-endian integer giving the byte length of
-the following UTF-8 string.
+For regular entries:
+
+3. `:mode` value (UTF-8, length-prefixed)
+4. `:sha256` value (UTF-8, length-prefixed)
+
+For symlink entries:
+
+3. `:target` value (UTF-8, length-prefixed)
+
+**Length prefix:** a 64-bit big-endian integer giving the byte length of
+the following UTF-8 byte sequence.
 
 **Excluded fields:** `:size`, `:encoding`, content bytes, and all header
 comments (including `git-rev` and `git-branch`) are intentionally excluded
@@ -209,18 +216,23 @@ invalidating the structural hash.
 ```rust
 // src/snapshot/hash.rs
 fn hash_length_prefixed(hasher: &mut Sha256, bytes: &[u8]) {
-    hasher.update((bytes.len() as u64).to_le_bytes());
+    hasher.update((bytes.len() as u64).to_be_bytes());
     hasher.update(bytes);
 }
 
 pub(crate) fn compute_snapshot_hash(files: &[SnapshotFile]) -> String {
     let mut hasher = Sha256::new();
     for file in files {
-        let entry_type = if file.symlink_target.is_some() { "symlink" } else { "file" };
-        hash_length_prefixed(&mut hasher, entry_type.as_bytes());
-        hash_length_prefixed(&mut hasher, file.path.as_bytes());
-        hash_length_prefixed(&mut hasher, file.mode.as_bytes());
-        hash_length_prefixed(&mut hasher, file.sha256.as_bytes());
+        if let Some(target) = &file.symlink_target {
+            hash_length_prefixed(&mut hasher, b"symlink");
+            hash_length_prefixed(&mut hasher, file.path.as_bytes());
+            hash_length_prefixed(&mut hasher, target.as_bytes());
+        } else {
+            hash_length_prefixed(&mut hasher, b"regular");
+            hash_length_prefixed(&mut hasher, file.path.as_bytes());
+            hash_length_prefixed(&mut hasher, file.mode.as_bytes());
+            hash_length_prefixed(&mut hasher, file.sha256.as_bytes());
+        }
     }
     hex::encode(hasher.finalize())  // (actual impl uses sha2::Digest::finalize)
 }
