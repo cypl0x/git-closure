@@ -312,6 +312,15 @@ https://nix.dev/manual/nix/stable/command-ref/new-cli/nix3-flake#types
 - `3`: parse failure (`fmt --check` cannot parse snapshot).
 - `4`: operational failure (I/O, provider/subprocess, usage/runtime error paths in `run()`).
 
+### CI Contract
+
+GitHub Actions treats the CLI contract as part of the release bar. CI runs
+`cargo test --locked` on both `ubuntu-latest` and `macos-latest` for MSRV
+(`1.85`) and stable Rust, plus `cargo clippy --locked -- -D warnings`,
+`cargo fmt --check`, and an explicit `cargo build --locked --release` job.
+A separate tag-triggered `Release` workflow builds release-profile artifacts for
+`v*` tags.
+
 ### Render / Export
 
 ```bash

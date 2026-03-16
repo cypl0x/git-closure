@@ -11,11 +11,14 @@ env:
 
 jobs:
   test:
-    name: Test (${{ matrix.toolchain }})
-    runs-on: ubuntu-latest
+    name: Test (${{ matrix.os }}, ${{ matrix.toolchain }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
         toolchain:
           - "1.85"   # MSRV — must match rust-version in Cargo.toml
           - stable
@@ -26,6 +29,15 @@ jobs:
           toolchain: ${{ matrix.toolchain }}
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked
+
+  build-release:
+    name: Build (release profile)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --locked --release
 
   clippy:
     name: Clippy
