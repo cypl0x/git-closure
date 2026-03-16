@@ -105,6 +105,11 @@ For symlink entries:
 
 This is the canonical Layer 2 identity for the snapshot.
 
+```console
+$ git-closure --help
+Deterministic S-expression source snapshots
+```
+
 ```bash
 # Historical note: this computes a payload-style hash over raw concatenated bytes,
 # not git-closure's canonical snapshot-hash.

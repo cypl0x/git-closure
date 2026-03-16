@@ -1,0 +1,13 @@
+Build a deterministic snapshot
+
+Usage: git-closure build [OPTIONS] <SOURCE>
+
+Arguments:
+  <SOURCE>  Source path or remote URL to snapshot
+
+Options:
+  -o, --output <OUTPUT>      Output file (default: <source-basename>.gcl or snapshot.gcl)
+      --include-untracked    
+      --require-clean        
+      --provider <PROVIDER>  [default: auto] [possible values: auto, local, git-clone, nix, github-api]
+  -h, --help                 Print help

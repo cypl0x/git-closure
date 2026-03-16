@@ -1,0 +1,3 @@
+bin.name = "git-closure"
+args = ["fmt", "noncanonical.gcl", "--check"]
+status = "failed"

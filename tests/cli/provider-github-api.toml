@@ -1,0 +1,3 @@
+bin.name = "git-closure"
+args = ["build", "gh:owner/repo", "--provider", "github-api"]
+status = "failed"

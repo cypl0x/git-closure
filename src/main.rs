@@ -161,7 +161,13 @@ fn run() -> Result<(), GitClosureError> {
             require_clean,
             provider,
         } => {
-            let output = output.unwrap_or_else(|| derive_output_path(&source));
+            let output = if let Some(path) = output {
+                path
+            } else {
+                let derived = derive_output_path(&source);
+                eprintln!("info: auto-derived output path: {}", derived.display());
+                derived
+            };
             let options = BuildOptions {
                 include_untracked,
                 require_clean,
@@ -201,7 +207,7 @@ fn run() -> Result<(), GitClosureError> {
                         "error: {} is not in canonical format (run `git-closure fmt` to fix)",
                         snapshot.display()
                     );
-                    process::exit(2);
+                    process::exit(1);
                 }
             } else {
                 std::fs::write(&snapshot, canonical.as_bytes()).map_err(GitClosureError::from)?;

@@ -1,0 +1,4 @@
+bin.name = "git-closure"
+args = ["fmt", "canonical.gcl", "--check"]
+status = "success"
+binary = true

@@ -1,0 +1,1 @@
+error: noncanonical.gcl is not in canonical format (run `git-closure fmt` to fix)

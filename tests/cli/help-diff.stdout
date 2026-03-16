@@ -1,0 +1,11 @@
+Compare two snapshots and show differences
+
+Usage: git-closure diff [OPTIONS] <LEFT> <RIGHT>
+
+Arguments:
+  <LEFT>   Left (old) snapshot
+  <RIGHT>  Right (new) snapshot
+
+Options:
+      --json  Output JSON
+  -h, --help  Print help
