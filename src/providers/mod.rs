@@ -362,13 +362,16 @@ fn download_github_tarball(source: &ParsedGithubApiSource) -> Result<Vec<u8>> {
     let token = std::env::var(GITHUB_TOKEN_ENV)
         .ok()
         .filter(|v| !v.is_empty());
+    download_tarball_url(&url, &source.display_name(), token.as_deref())
+}
 
+fn download_tarball_url(url: &str, source_name: &str, token: Option<&str>) -> Result<Vec<u8>> {
     let agent = ureq::builder().build();
     let mut request = agent
-        .get(&url)
+        .get(url)
         .set("Accept", "application/vnd.github+json")
         .set("User-Agent", "git-closure");
-    if let Some(token) = &token {
+    if let Some(token) = token {
         request = request.set("Authorization", &format!("Bearer {token}"));
     }
 
@@ -380,8 +383,7 @@ fn download_github_tarball(source: &ParsedGithubApiSource) -> Result<Vec<u8>> {
                 .read_to_end(&mut body)
                 .map_err(|err| {
                     GitClosureError::Parse(format!(
-                        "github-api: failed to read tarball response for {}: {err}",
-                        source.display_name()
+                        "github-api: failed to read tarball response for {source_name}: {err}",
                     ))
                 })?;
             Ok(body)
@@ -392,13 +394,12 @@ fn download_github_tarball(source: &ParsedGithubApiSource) -> Result<Vec<u8>> {
             Err(github_api_status_error(
                 status,
                 rate_remaining.as_deref(),
-                &source.display_name(),
+                source_name,
                 &body,
             ))
         }
         Err(ureq::Error::Transport(err)) => Err(GitClosureError::Parse(format!(
-            "github-api: request failed for {}: {err}",
-            source.display_name()
+            "github-api: request failed for {source_name}: {err}",
         ))),
     }
 }
@@ -724,7 +725,10 @@ mod tests {
     use flate2::write::GzEncoder;
     use flate2::Compression;
     use std::io::ErrorKind;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
     use std::path::Path;
+    use std::time::Duration;
 
     fn make_gzipped_tar(entries: &[(&str, &[u8])]) -> Vec<u8> {
         let mut gz = GzEncoder::new(Vec::new(), Compression::default());
@@ -983,6 +987,63 @@ mod tests {
         assert!(
             matches!(err, GitClosureError::Parse(_)),
             "expected parse error for non-github source"
+        );
+    }
+
+    #[test]
+    fn github_api_download_follows_redirects() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let payload = b"redirect-ok".to_vec();
+        let payload_for_server = payload.clone();
+
+        let server = std::thread::spawn(move || {
+            let mut seen_redirect = false;
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().expect("accept connection");
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .expect("set read timeout");
+                let mut req_buf = [0u8; 2048];
+                let n = stream.read(&mut req_buf).expect("read request");
+                let request = String::from_utf8_lossy(&req_buf[..n]);
+
+                if request.starts_with("GET /redirect ") {
+                    let response = format!(
+                        "HTTP/1.1 302 Found\r\nLocation: http://{addr}/tarball\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    );
+                    stream
+                        .write_all(response.as_bytes())
+                        .expect("write redirect response");
+                    seen_redirect = true;
+                } else if request.starts_with("GET /tarball ") {
+                    let headers = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        payload_for_server.len()
+                    );
+                    stream
+                        .write_all(headers.as_bytes())
+                        .expect("write ok headers");
+                    stream
+                        .write_all(&payload_for_server)
+                        .expect("write payload");
+                    return seen_redirect;
+                }
+            }
+            false
+        });
+
+        let bytes = super::download_tarball_url(
+            &format!("http://{addr}/redirect"),
+            "owner/repo@HEAD",
+            None,
+        )
+        .expect("redirected download should succeed");
+
+        assert_eq!(bytes, payload);
+        assert!(
+            server.join().expect("join test server"),
+            "server should observe redirect then tarball request"
         );
     }
 
