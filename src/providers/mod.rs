@@ -18,6 +18,94 @@ pub enum ProviderKind {
     GithubApi,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceSpec {
+    LocalPath(PathBuf),
+    GitHubRepo {
+        owner: String,
+        repo: String,
+        reference: Option<String>,
+    },
+    GitLabRepo {
+        group: String,
+        repo: String,
+        reference: Option<String>,
+    },
+    NixFlakeRef(String),
+    GitRemoteUrl(String),
+    Unknown(String),
+}
+
+impl SourceSpec {
+    pub fn parse(source: &str) -> Result<Self> {
+        if source.trim().is_empty() {
+            return Err(GitClosureError::Parse(
+                "source must not be empty".to_string(),
+            ));
+        }
+
+        if Path::new(source).exists() {
+            return Ok(Self::LocalPath(PathBuf::from(source)));
+        }
+
+        if looks_like_nix_flake_ref(source) {
+            return Ok(Self::NixFlakeRef(source.to_string()));
+        }
+
+        if let Some(rest) = source.strip_prefix("gh:") {
+            return parse_hosted_repo(rest, "github", false).map(|(owner, repo, reference)| {
+                Self::GitHubRepo {
+                    owner,
+                    repo,
+                    reference,
+                }
+            });
+        }
+
+        if let Some(rest) = source.strip_prefix("gl:") {
+            return parse_hosted_repo(rest, "gitlab", true).map(|(group, repo, reference)| {
+                Self::GitLabRepo {
+                    group,
+                    repo,
+                    reference,
+                }
+            });
+        }
+
+        if let Some(rest) = source.strip_prefix("https://github.com/") {
+            if let Ok((owner, repo, reference)) = parse_hosted_repo(rest, "github", false) {
+                return Ok(Self::GitHubRepo {
+                    owner,
+                    repo,
+                    reference,
+                });
+            }
+            return Ok(Self::Unknown(source.to_string()));
+        }
+
+        if let Some(rest) = source.strip_prefix("https://gitlab.com/") {
+            if let Ok((group, repo, reference)) = parse_hosted_repo(rest, "gitlab", true) {
+                return Ok(Self::GitLabRepo {
+                    group,
+                    repo,
+                    reference,
+                });
+            }
+            return Ok(Self::Unknown(source.to_string()));
+        }
+
+        if source.starts_with("http://")
+            || source.starts_with("https://")
+            || source.starts_with("git@")
+            || source.ends_with(".git")
+        {
+            return Ok(Self::GitRemoteUrl(source.to_string()));
+        }
+
+        Ok(Self::Unknown(source.to_string()))
+    }
+}
+
 pub struct FetchedSource {
     pub root: PathBuf,
     // TempDir does not implement Debug; keep field private and suppress the
@@ -46,32 +134,41 @@ pub trait Provider {
 }
 
 pub fn fetch_source(source: &str, provider_kind: ProviderKind) -> Result<FetchedSource> {
+    let spec = SourceSpec::parse(source)?;
     let local = LocalProvider;
     let git = GitCloneProvider;
     let nix = NixProvider;
     let github_api = GithubApiProvider;
 
-    match provider_kind {
+    let selected = choose_provider(&spec, provider_kind)?;
+
+    match selected {
         ProviderKind::Local => local.fetch(source),
         ProviderKind::GitClone => git.fetch(source),
         ProviderKind::Nix => nix.fetch(source),
         ProviderKind::GithubApi => github_api.fetch(source),
-        ProviderKind::Auto => {
-            if Path::new(source).exists() {
-                return local.fetch(source);
-            }
-
-            if looks_like_nix_flake_ref(source) {
-                return nix.fetch(source);
-            }
-
-            if looks_like_github_source(source) {
-                return git.fetch(source);
-            }
-
-            git.fetch(source)
-        }
+        ProviderKind::Auto => unreachable!("auto is resolved by choose_provider"),
     }
+}
+
+fn choose_provider(spec: &SourceSpec, requested: ProviderKind) -> Result<ProviderKind> {
+    if requested != ProviderKind::Auto {
+        return Ok(requested);
+    }
+
+    let selected = match spec {
+        SourceSpec::LocalPath(_) => ProviderKind::Local,
+        SourceSpec::NixFlakeRef(_) => ProviderKind::Nix,
+        SourceSpec::GitHubRepo { .. }
+        | SourceSpec::GitLabRepo { .. }
+        | SourceSpec::GitRemoteUrl(_) => ProviderKind::GitClone,
+        SourceSpec::Unknown(value) => {
+            return Err(GitClosureError::Parse(format!(
+                "unsupported source syntax for auto provider: {value}"
+            )));
+        }
+    };
+    Ok(selected)
 }
 
 pub struct LocalProvider;
@@ -246,10 +343,6 @@ fn split_repo_ref(input: &str) -> (&str, Option<String>) {
     (input, None)
 }
 
-fn looks_like_github_source(source: &str) -> bool {
-    source.starts_with("gh:") || source.contains("github.com/") || source.starts_with("github:")
-}
-
 fn looks_like_nix_flake_ref(source: &str) -> bool {
     source.starts_with("nix:")
         || source.starts_with("github:")
@@ -259,6 +352,36 @@ fn looks_like_nix_flake_ref(source: &str) -> bool {
         || source.starts_with("path:")
         || source.starts_with("tarball+")
         || source.starts_with("file+")
+}
+
+fn parse_hosted_repo(
+    source: &str,
+    host: &str,
+    allow_nested_group: bool,
+) -> Result<(String, String, Option<String>)> {
+    let (repo_part, reference) = split_repo_ref(source);
+    let repo_part = repo_part.trim_end_matches(".git");
+    let mut segments = repo_part.split('/').collect::<Vec<_>>();
+    if segments.len() < 2 {
+        return Err(GitClosureError::Parse(format!(
+            "invalid {host} source, expected <owner>/<repo>: {source}"
+        )));
+    }
+    if !allow_nested_group && segments.len() != 2 {
+        return Err(GitClosureError::Parse(format!(
+            "invalid {host} source, expected <owner>/<repo>: {source}"
+        )));
+    }
+
+    let repo = segments.pop().unwrap().to_string();
+    let owner_or_group = segments.join("/");
+    if owner_or_group.is_empty() || repo.is_empty() {
+        return Err(GitClosureError::Parse(format!(
+            "invalid {host} source, expected <owner>/<repo>: {source}"
+        )));
+    }
+
+    Ok((owner_or_group, repo, reference))
 }
 
 fn parse_nix_metadata_path(output: &[u8]) -> Result<PathBuf> {
@@ -303,8 +426,9 @@ pub(crate) fn run_command_status(
 #[cfg(test)]
 mod tests {
     use super::{
-        fetch_source, parse_git_source, parse_nix_metadata_path, run_command_output,
-        run_command_status, split_repo_ref, GitCloneProvider, NixProvider, Provider, ProviderKind,
+        choose_provider, fetch_source, parse_git_source, parse_nix_metadata_path,
+        run_command_output, run_command_status, split_repo_ref, GitCloneProvider, NixProvider,
+        Provider, ProviderKind, SourceSpec,
     };
     use crate::error::GitClosureError;
     use crate::utils::truncate_stderr;
@@ -317,6 +441,72 @@ mod tests {
             split_repo_ref("owner/repo@main"),
             ("owner/repo", Some("main".to_string()))
         );
+    }
+
+    #[test]
+    fn source_spec_parse_documented_examples() {
+        let gh = SourceSpec::parse("gh:owner/repo@main").expect("parse gh");
+        assert!(matches!(
+            gh,
+            SourceSpec::GitHubRepo {
+                owner,
+                repo,
+                reference: Some(reference)
+            } if owner == "owner" && repo == "repo" && reference == "main"
+        ));
+
+        let gl = SourceSpec::parse("gl:group/project").expect("parse gl");
+        assert!(matches!(
+            gl,
+            SourceSpec::GitLabRepo {
+                group,
+                repo,
+                reference: None
+            } if group == "group" && repo == "project"
+        ));
+
+        let nix = SourceSpec::parse("nix:github:NixOS/nixpkgs/nixos-unstable").expect("parse nix");
+        assert!(matches!(nix, SourceSpec::NixFlakeRef(_)));
+
+        let github_flake = SourceSpec::parse("github:owner/repo").expect("parse github flake ref");
+        assert!(matches!(github_flake, SourceSpec::NixFlakeRef(_)));
+
+        let https = SourceSpec::parse("https://github.com/owner/repo").expect("parse github https");
+        assert!(matches!(https, SourceSpec::GitHubRepo { .. }));
+
+        let archive = SourceSpec::parse("https://github.com/owner/repo/archive/main.tar.gz")
+            .expect("parse github archive URL as unsupported");
+        assert!(matches!(archive, SourceSpec::Unknown(_)));
+    }
+
+    #[test]
+    fn choose_provider_auto_from_source_spec() {
+        let local = SourceSpec::LocalPath(std::path::PathBuf::from("."));
+        assert_eq!(
+            choose_provider(&local, ProviderKind::Auto).expect("choose local"),
+            ProviderKind::Local
+        );
+
+        let gh = SourceSpec::GitHubRepo {
+            owner: "owner".to_string(),
+            repo: "repo".to_string(),
+            reference: None,
+        };
+        assert_eq!(
+            choose_provider(&gh, ProviderKind::Auto).expect("choose git clone for github"),
+            ProviderKind::GitClone
+        );
+
+        let nix = SourceSpec::NixFlakeRef("github:owner/repo".to_string());
+        assert_eq!(
+            choose_provider(&nix, ProviderKind::Auto).expect("choose nix for flake refs"),
+            ProviderKind::Nix
+        );
+
+        let unknown = SourceSpec::Unknown("wat://unknown".to_string());
+        let err = choose_provider(&unknown, ProviderKind::Auto)
+            .expect_err("unknown auto source should fail before subprocess");
+        assert!(matches!(err, GitClosureError::Parse(_)));
     }
 
     #[test]

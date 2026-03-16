@@ -243,8 +243,8 @@ git-closure watch ~/dotfiles
 - `local` provider reads from local directories.
 - `git-clone` provider performs a shallow clone (`--depth 1`) and snapshots the checkout.
 - `nix` provider runs `nix flake metadata <ref> --json`, reads the returned `path`, then snapshots that deterministic store path.
-- `github-api` provider currently reuses `git-clone` for reliability in v0.1.
-- `auto` provider selection prefers: local path -> nix flake reference -> github source -> git clone fallback.
+- `github-api` provider is intentionally unimplemented in v0.1 and fails explicitly when selected.
+- `auto` provider selection is grammar-driven: local path -> nix flake reference -> hosted git repo shorthand/URLs -> git remote URL.
 
 Supported shorthand examples:
 
@@ -253,6 +253,11 @@ git-closure build gh:owner/repo@main -o repo.gcl
 git-closure build gl:group/project -o project.gcl
 git-closure build nix:github:NixOS/nixpkgs/nixos-unstable -o nixpkgs.gcl
 ```
+
+Important distinction:
+
+- `gh:owner/repo` means "GitHub repository shorthand" and resolves to `git-clone` in auto mode.
+- `github:owner/repo` means "Nix flake reference" and resolves to `nix` in auto mode.
 
 You can force a provider explicitly:
 

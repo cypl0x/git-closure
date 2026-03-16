@@ -1,3 +1,4 @@
 bin.name = "git-closure"
 args = ["build", "repo"]
 status = "success"
+fs.sandbox = true
