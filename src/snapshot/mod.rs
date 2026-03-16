@@ -49,3 +49,20 @@ pub struct BuildOptions {
 pub struct VerifyReport {
     pub file_count: usize,
 }
+
+/// A single entry returned by [`crate::list_snapshot`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListEntry {
+    /// Slash-delimited path relative to the snapshot root.
+    pub path: String,
+    /// `true` for symlinks, `false` for regular files.
+    pub is_symlink: bool,
+    /// Symlink target string (only set when `is_symlink == true`).
+    pub symlink_target: Option<String>,
+    /// Hex-encoded SHA-256 of file content (empty for symlinks).
+    pub sha256: String,
+    /// Octal permission bits as a string (e.g. `"644"`, `"755"`, `"120000"`).
+    pub mode: String,
+    /// Byte size of file content (0 for symlinks).
+    pub size: u64,
+}

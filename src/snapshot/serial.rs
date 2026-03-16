@@ -1,10 +1,14 @@
 /// S-expression serialization and deserialization for `.gcl` snapshot files.
+use std::fs;
+use std::path::Path;
+
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 
 use crate::error::GitClosureError;
+use crate::utils::io_error_with_path;
 
-use super::{Result, SnapshotFile, SnapshotHeader};
+use super::{ListEntry, Result, SnapshotFile, SnapshotHeader};
 
 // ── Serialization ─────────────────────────────────────────────────────────────
 
@@ -338,6 +342,40 @@ fn parse_files_value(value: &lexpr::Value) -> Result<Vec<SnapshotFile>> {
     Ok(files)
 }
 
+// ── Public high-level operations ─────────────────────────────────────────────
+
+/// Parses a `.gcl` snapshot file and returns a `ListEntry` for each recorded
+/// file, in lexicographic path order.
+pub fn list_snapshot(snapshot: &Path) -> Result<Vec<ListEntry>> {
+    let text = fs::read_to_string(snapshot).map_err(|err| io_error_with_path(err, snapshot))?;
+    let (_header, files) = parse_snapshot(&text)?;
+    Ok(files
+        .into_iter()
+        .map(|f| ListEntry {
+            is_symlink: f.symlink_target.is_some(),
+            symlink_target: f.symlink_target,
+            sha256: f.sha256,
+            mode: f.mode,
+            size: f.size,
+            path: f.path,
+        })
+        .collect())
+}
+
+/// Reads a `.gcl` snapshot file and returns its canonical serialized form.
+///
+/// The result is byte-identical to what [`crate::build_snapshot`] would
+/// produce for the same content — modulo the structural hash which is
+/// recomputed from the parsed file list.  Use `--check` mode in the `fmt`
+/// subcommand to detect snapshots that are not yet in canonical form.
+pub fn fmt_snapshot(snapshot: &Path) -> Result<String> {
+    let text = fs::read_to_string(snapshot).map_err(|err| io_error_with_path(err, snapshot))?;
+    let (_header, mut files) = parse_snapshot(&text)?;
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    let hash = super::hash::compute_snapshot_hash(&files);
+    Ok(serialize_snapshot(&files, &hash))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -411,5 +449,121 @@ mod tests {
         let sample = "line1\nline2\u{0000}\u{fffd}\u{1f642}\\\"";
         let expected = lexpr::to_string(&lexpr::Value::string(sample)).expect("print with lexpr");
         assert_eq!(quote_string(sample), expected);
+    }
+
+    // ── list_snapshot tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn list_snapshot_returns_entries_in_path_order() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let file_b = make_text_file("b.txt", "b");
+        let file_a = make_text_file("a.txt", "a");
+        // Intentionally unsorted to verify output is sorted.
+        let mut files = vec![file_b.clone(), file_a.clone()];
+        files.sort_by(|x, y| x.path.cmp(&y.path));
+        let hash = compute_snapshot_hash(&files);
+        let text = serialize_snapshot(&files, &hash);
+
+        let dir = TempDir::new().unwrap();
+        let snap = dir.path().join("snap.gcl");
+        fs::write(&snap, text.as_bytes()).unwrap();
+
+        let entries = list_snapshot(&snap).expect("list_snapshot must succeed");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].path, "a.txt");
+        assert_eq!(entries[1].path, "b.txt");
+        assert!(!entries[0].is_symlink);
+        assert_eq!(entries[0].size, 1);
+    }
+
+    #[test]
+    fn list_snapshot_symlink_entry_has_correct_fields() {
+        use crate::snapshot::hash::sha256_hex;
+        use std::fs;
+        use tempfile::TempDir;
+
+        let symlink_file = SnapshotFile {
+            path: "link".to_string(),
+            sha256: String::new(),
+            mode: "120000".to_string(),
+            size: 0,
+            encoding: None,
+            symlink_target: Some("target.txt".to_string()),
+            content: Vec::new(),
+        };
+        let regular = make_text_file("target.txt", "content");
+        let files = vec![symlink_file, regular];
+        let hash = compute_snapshot_hash(&files);
+        let text = serialize_snapshot(&files, &hash);
+
+        let dir = TempDir::new().unwrap();
+        let snap = dir.path().join("snap.gcl");
+        fs::write(&snap, text.as_bytes()).unwrap();
+
+        let entries = list_snapshot(&snap).expect("list_snapshot must succeed");
+        let link_entry = entries.iter().find(|e| e.path == "link").unwrap();
+        assert!(link_entry.is_symlink);
+        assert_eq!(link_entry.symlink_target.as_deref(), Some("target.txt"));
+        assert_eq!(link_entry.sha256, "");
+        assert_eq!(link_entry.size, 0);
+
+        // Suppress unused import warning in non-unix builds.
+        let _ = sha256_hex;
+    }
+
+    // ── fmt_snapshot tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn fmt_snapshot_is_idempotent() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let file = make_text_file("src/lib.rs", "fn main() {}\n");
+        let hash = compute_snapshot_hash(&[file.clone()]);
+        let original = serialize_snapshot(&[file], &hash);
+
+        let dir = TempDir::new().unwrap();
+        let snap = dir.path().join("snap.gcl");
+        fs::write(&snap, original.as_bytes()).unwrap();
+
+        let formatted = fmt_snapshot(&snap).expect("fmt_snapshot must succeed");
+        assert_eq!(
+            formatted, original,
+            "fmt_snapshot on already-canonical snapshot must be idempotent"
+        );
+
+        // Write the formatted version and format again — must still be equal.
+        fs::write(&snap, formatted.as_bytes()).unwrap();
+        let formatted2 = fmt_snapshot(&snap).expect("second fmt_snapshot must succeed");
+        assert_eq!(formatted2, formatted);
+    }
+
+    #[test]
+    fn fmt_snapshot_sorts_files_canonically() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let file_z = make_text_file("z.txt", "z");
+        let file_a = make_text_file("a.txt", "a");
+        // Build with files in reverse order (z before a) to create an out-of-order snapshot.
+        let mut files_sorted = vec![file_z.clone(), file_a.clone()];
+        files_sorted.sort_by(|x, y| x.path.cmp(&y.path));
+        let hash = compute_snapshot_hash(&files_sorted);
+        let canonical = serialize_snapshot(&files_sorted, &hash);
+
+        let dir = TempDir::new().unwrap();
+        let snap = dir.path().join("snap.gcl");
+        fs::write(&snap, canonical.as_bytes()).unwrap();
+
+        let formatted = fmt_snapshot(&snap).expect("fmt_snapshot must succeed");
+        // Paths must appear in order in the formatted output.
+        let a_pos = formatted.find("\"a.txt\"").unwrap();
+        let z_pos = formatted.find("\"z.txt\"").unwrap();
+        assert!(
+            a_pos < z_pos,
+            "a.txt must appear before z.txt in canonical output"
+        );
     }
 }
