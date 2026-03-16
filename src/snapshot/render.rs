@@ -260,6 +260,18 @@ mod tests {
         }
     }
 
+    fn symlink_file(path: &str, target: &str) -> SnapshotFile {
+        SnapshotFile {
+            path: path.to_string(),
+            sha256: String::new(),
+            mode: "120000".to_string(),
+            size: 0,
+            encoding: None,
+            symlink_target: Some(target.to_string()),
+            content: Vec::new(),
+        }
+    }
+
     fn write_snap(
         dir: &TempDir,
         files: &[SnapshotFile],
@@ -362,6 +374,61 @@ mod tests {
         assert!(
             output.contains("\"git_branch\": null"),
             "git_branch must be null when absent"
+        );
+    }
+
+    #[test]
+    fn render_outputs_are_deterministic_for_same_input() {
+        let dir = TempDir::new().unwrap();
+        let files = vec![text_file("a.txt", "aaa"), symlink_file("link", "a.txt")];
+        let snap = write_snap(&dir, &files, Some("abc123"), Some("main"));
+
+        let md_a = render_snapshot(&snap, RenderFormat::Markdown).unwrap();
+        let md_b = render_snapshot(&snap, RenderFormat::Markdown).unwrap();
+        assert_eq!(md_a, md_b, "markdown output must be deterministic");
+
+        let html_a = render_snapshot(&snap, RenderFormat::Html).unwrap();
+        let html_b = render_snapshot(&snap, RenderFormat::Html).unwrap();
+        assert_eq!(html_a, html_b, "html output must be deterministic");
+
+        let json_a = render_snapshot(&snap, RenderFormat::Json).unwrap();
+        let json_b = render_snapshot(&snap, RenderFormat::Json).unwrap();
+        assert_eq!(json_a, json_b, "json output must be deterministic");
+    }
+
+    #[test]
+    fn render_symlink_entries_are_consistent_across_formats() {
+        let dir = TempDir::new().unwrap();
+        let files = vec![text_file("a.txt", "aaa"), symlink_file("link", "a.txt")];
+        let snap = write_snap(&dir, &files, None, None);
+
+        let markdown = render_snapshot(&snap, RenderFormat::Markdown).unwrap();
+        assert!(
+            markdown.contains("`link`")
+                && markdown.contains("symlink")
+                && markdown.contains("→ a.txt"),
+            "markdown must identify symlink entries and targets"
+        );
+
+        let html = render_snapshot(&snap, RenderFormat::Html).unwrap();
+        assert!(
+            html.contains("<code>link</code>")
+                && html.contains("symlink")
+                && html.contains("→ a.txt"),
+            "html must identify symlink entries and targets"
+        );
+
+        let json = render_snapshot(&snap, RenderFormat::Json).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).expect("json must parse");
+        let files = value["files"].as_array().expect("files must be an array");
+        let link_entry = files
+            .iter()
+            .find(|entry| entry["path"] == serde_json::Value::from("link"))
+            .expect("json must include link entry");
+        assert_eq!(link_entry["type"], serde_json::Value::from("symlink"));
+        assert_eq!(
+            link_entry["symlink_target"],
+            serde_json::Value::from("a.txt")
         );
     }
 }

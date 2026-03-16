@@ -96,6 +96,8 @@ enum Commands {
         snapshot: PathBuf,
         #[arg(long, value_enum, default_value_t = ReportFormat::Markdown)]
         format: ReportFormat,
+        #[arg(short, long, help = "Write output to file instead of stdout")]
+        output: Option<PathBuf>,
     },
     #[command(about = "Generate shell completion scripts", visible_alias = "c")]
     Completion {
@@ -252,9 +254,17 @@ fn run() -> Result<(), GitClosureError> {
                 std::fs::write(&snapshot, canonical.as_bytes()).map_err(GitClosureError::from)?;
             }
         }
-        Commands::Render { snapshot, format } => {
-            let output = render_snapshot(&snapshot, format.into())?;
-            print!("{output}");
+        Commands::Render {
+            snapshot,
+            format,
+            output,
+        } => {
+            let rendered = render_snapshot(&snapshot, format.into())?;
+            if let Some(path) = output {
+                std::fs::write(path, rendered.as_bytes())?;
+            } else {
+                print!("{rendered}");
+            }
         }
         Commands::Completion { shell } => {
             print_completion(shell);

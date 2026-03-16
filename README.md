@@ -337,14 +337,21 @@ clear rationale in the commit message.
 ### Render / Export
 
 ```bash
-git-closure render dotfiles.gcl --format pdf      -o dotfiles.pdf
-git-closure render dotfiles.gcl --format html     -o dotfiles.html
-git-closure render dotfiles.gcl --format markdown -o dotfiles.md
-git-closure render dotfiles.gcl --format org      -o dotfiles.org
-git-closure render dotfiles.gcl --format docx     -o dotfiles.docx
+git-closure render dotfiles.gcl --format markdown > dotfiles.md
+git-closure render dotfiles.gcl --format html     > dotfiles.html
 git-closure render dotfiles.gcl --format json     -o dotfiles.json
-git-closure render dotfiles.gcl --format tar      -o dotfiles.tar
 ```
+
+`render` supports `markdown`, `html`, and `json`. It writes to stdout by
+default and supports `-o/--output` to write to a file.
+
+Symlink rendering policy (v0.1):
+
+- Markdown and HTML render symlink entries as `type=symlink` rows and show the
+  link target as `→ <target>` in the digest column.
+- JSON render emits symlink entries with `"type": "symlink"`,
+  `"mode": "120000"`, `"size": 0`, `"sha256": ""`, and
+  `"symlink_target": "<target>"`.
 
 ### Filtering
 

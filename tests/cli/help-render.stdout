@@ -1,0 +1,11 @@
+Render a snapshot as a Markdown, HTML, or JSON audit report
+
+Usage: git-closure render [OPTIONS] <SNAPSHOT>
+
+Arguments:
+  <SNAPSHOT>  Snapshot file to render
+
+Options:
+      --format <FORMAT>  [default: markdown] [possible values: markdown, html, json]
+  -o, --output <OUTPUT>  Write output to file instead of stdout
+  -h, --help             Print help

@@ -1,0 +1,19 @@
+{
+  "snapshot_hash": "7966501418894b02de5440687eda89c8ef807eee3536217f5037aecfefa8c9e3",
+  "file_count": 1,
+  "git_rev": null,
+  "git_branch": null,
+  "regular_file_count": 1,
+  "symlink_count": 0,
+  "total_bytes": 1,
+  "files": [
+    {
+      "path": "x.txt",
+      "type": "file",
+      "mode": "644",
+      "size": 1,
+      "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+      "symlink_target": null
+    }
+  ]
+}
