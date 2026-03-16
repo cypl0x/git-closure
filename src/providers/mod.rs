@@ -1197,6 +1197,28 @@ mod tests {
     }
 
     #[test]
+    fn github_archive_extraction_rejects_duplicate_file_entries() {
+        let tarball = make_gzipped_tar(&[
+            ("repo-abc/dup.txt", b"first\n"),
+            ("repo-abc/dup.txt", b"second\n"),
+        ]);
+        let tmp = tempfile::TempDir::new().expect("create tempdir");
+        let dest = tmp.path().join("out");
+        std::fs::create_dir_all(&dest).expect("create destination dir");
+
+        let err = super::extract_github_tarball(&tarball, &dest)
+            .expect_err("duplicate file entries must be rejected");
+        assert!(
+            matches!(err, GitClosureError::Parse(_)),
+            "expected Parse error, got {err:?}"
+        );
+        assert!(
+            err.to_string().contains("duplicate file entry path"),
+            "error must mention duplicate file entry path: {err}"
+        );
+    }
+
+    #[test]
     fn github_api_provider_rejects_non_github_source() {
         use super::GithubApiProvider;
         let provider = GithubApiProvider;
