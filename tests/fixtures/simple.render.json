@@ -1,0 +1,51 @@
+{
+  "snapshot_hash": "f0c6719f8cf295fa7626bf773c3554583edebdf97004bceacf3193a64c1799f5",
+  "file_count": 5,
+  "git_rev": null,
+  "git_branch": null,
+  "regular_file_count": 4,
+  "symlink_count": 1,
+  "total_bytes": 49,
+  "files": [
+    {
+      "path": "alpha.txt",
+      "type": "file",
+      "mode": "644",
+      "size": 6,
+      "sha256": "b6a98d9ce9a2d9149288fa3df42d377c3e42737afdcdaf714e33c0a100b51060",
+      "symlink_target": null
+    },
+    {
+      "path": "bin/data.bin",
+      "type": "file",
+      "mode": "644",
+      "size": 6,
+      "sha256": "6d640bb027909f9a400f194f593499a2183d93549e77f2d541315d5e16ebf850",
+      "symlink_target": null
+    },
+    {
+      "path": "link",
+      "type": "symlink",
+      "mode": "120000",
+      "size": 0,
+      "sha256": "",
+      "symlink_target": "alpha.txt"
+    },
+    {
+      "path": "nested/beta.txt",
+      "type": "file",
+      "mode": "644",
+      "size": 5,
+      "sha256": "f2c82decdd7181cf98945929a62598db7e6b477e11f6e0eb0ae97020eff151ad",
+      "symlink_target": null
+    },
+    {
+      "path": "scripts/run.sh",
+      "type": "file",
+      "mode": "755",
+      "size": 32,
+      "sha256": "81e5a688c70c59e8beda21b3f7b4558cbffca10ee00098afd20f8a634722b8e8",
+      "symlink_target": null
+    }
+  ]
+}

@@ -321,6 +321,19 @@ GitHub Actions treats the CLI contract as part of the release bar. CI runs
 A separate tag-triggered `Release` workflow builds release-profile artifacts for
 `v*` tags.
 
+### Golden Fixtures
+
+Byte-level format stability is locked by committed golden fixtures under
+`tests/fixtures/`:
+
+- `tests/fixtures/simple.gcl` is the canonical expected snapshot output for a
+  reference tree containing regular files, a symlink, an executable mode, and a
+  binary payload.
+- `tests/fixtures/simple.render.json` locks the current JSON render surface.
+
+Intentional format changes must update these fixtures in the same commit, with a
+clear rationale in the commit message.
+
 ### Render / Export
 
 ```bash
