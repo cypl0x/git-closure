@@ -1,10 +1,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus};
+use std::process::Command;
 
 use tempfile::TempDir;
 
 use crate::error::GitClosureError;
+use crate::utils::truncate_stderr;
 
 type Result<T> = std::result::Result<T, GitClosureError>;
 
@@ -265,21 +266,6 @@ fn parse_nix_metadata_path(output: &[u8]) -> Result<PathBuf> {
     Ok(PathBuf::from(metadata.path))
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn run_command_status(
-    command: &'static str,
-    args: &[&str],
-    current_dir: Option<&Path>,
-) -> Result<ExitStatus> {
-    let mut cmd = Command::new(command);
-    cmd.args(args);
-    if let Some(dir) = current_dir {
-        cmd.current_dir(dir);
-    }
-    cmd.status()
-        .map_err(|source| GitClosureError::CommandSpawnFailed { command, source })
-}
-
 pub(crate) fn run_command_output(
     command: &'static str,
     args: &[&str],
@@ -294,27 +280,32 @@ pub(crate) fn run_command_output(
         .map_err(|source| GitClosureError::CommandSpawnFailed { command, source })
 }
 
-pub(crate) fn truncate_stderr(bytes: &[u8]) -> String {
-    const MAX_BYTES: usize = 512;
-    let trimmed = String::from_utf8_lossy(bytes).trim().to_string();
-    if trimmed.len() <= MAX_BYTES {
-        return trimmed;
+/// `run_command_status` is only used in tests (spawn/exit-code assertions).
+/// Keeping it test-only avoids a `#[allow(dead_code)]` annotation on a
+/// `pub(crate)` function that has no production call site.
+#[cfg(test)]
+pub(crate) fn run_command_status(
+    command: &'static str,
+    args: &[&str],
+    current_dir: Option<&Path>,
+) -> Result<std::process::ExitStatus> {
+    let mut cmd = Command::new(command);
+    cmd.args(args);
+    if let Some(dir) = current_dir {
+        cmd.current_dir(dir);
     }
-
-    let mut end = MAX_BYTES.saturating_sub(3);
-    while end > 0 && !trimmed.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}...", &trimmed[..end])
+    cmd.status()
+        .map_err(|source| GitClosureError::CommandSpawnFailed { command, source })
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         parse_git_source, parse_nix_metadata_path, run_command_output, run_command_status,
-        split_repo_ref, truncate_stderr, GitCloneProvider, NixProvider, Provider,
+        split_repo_ref, GitCloneProvider, NixProvider, Provider,
     };
     use crate::error::GitClosureError;
+    use crate::utils::truncate_stderr;
     use std::io::ErrorKind;
 
     #[test]
