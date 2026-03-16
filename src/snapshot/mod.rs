@@ -4,6 +4,7 @@
 pub mod build;
 pub mod diff;
 pub mod hash;
+pub mod render;
 pub mod serial;
 
 use crate::error::GitClosureError;

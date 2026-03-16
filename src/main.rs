@@ -6,7 +6,8 @@ use clap_complete::{generate, shells};
 
 use git_closure::{
     build_snapshot_from_source, diff_snapshots, fmt_snapshot, list_snapshot, materialize_snapshot,
-    providers::ProviderKind, verify_snapshot, BuildOptions, DiffEntry, GitClosureError, ListEntry,
+    providers::ProviderKind, render_snapshot, verify_snapshot, BuildOptions, DiffEntry,
+    GitClosureError, ListEntry, RenderFormat,
 };
 
 #[derive(Parser, Debug)]
@@ -81,11 +82,38 @@ enum Commands {
         )]
         check: bool,
     },
+    #[command(
+        about = "Render a snapshot as a Markdown, HTML, or JSON audit report",
+        visible_alias = "r"
+    )]
+    Render {
+        #[arg(help = "Snapshot file to render")]
+        snapshot: PathBuf,
+        #[arg(long, value_enum, default_value_t = ReportFormat::Markdown)]
+        format: ReportFormat,
+    },
     #[command(about = "Generate shell completion scripts", visible_alias = "c")]
     Completion {
         #[arg(help = "Shell to generate completions for")]
         shell: CompletionShell,
     },
+}
+
+#[derive(Clone, Debug, ValueEnum)]
+enum ReportFormat {
+    Markdown,
+    Html,
+    Json,
+}
+
+impl From<ReportFormat> for RenderFormat {
+    fn from(value: ReportFormat) -> Self {
+        match value {
+            ReportFormat::Markdown => RenderFormat::Markdown,
+            ReportFormat::Html => RenderFormat::Html,
+            ReportFormat::Json => RenderFormat::Json,
+        }
+    }
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -178,6 +206,10 @@ fn run() -> Result<(), GitClosureError> {
             } else {
                 std::fs::write(&snapshot, canonical.as_bytes()).map_err(GitClosureError::from)?;
             }
+        }
+        Commands::Render { snapshot, format } => {
+            let output = render_snapshot(&snapshot, format.into())?;
+            print!("{output}");
         }
         Commands::Completion { shell } => {
             print_completion(shell);

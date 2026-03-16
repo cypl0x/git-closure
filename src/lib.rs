@@ -30,6 +30,7 @@ pub use snapshot::build::{
     build_snapshot_with_options,
 };
 pub use snapshot::diff::{diff_snapshots, DiffEntry, DiffResult};
+pub use snapshot::render::{render_snapshot, RenderFormat};
 pub use snapshot::serial::{fmt_snapshot, list_snapshot};
 pub use snapshot::{BuildOptions, ListEntry, VerifyReport};
 
