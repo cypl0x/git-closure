@@ -20,9 +20,11 @@ use crate::git::{
 use crate::providers::{fetch_source, Provider, ProviderKind};
 use crate::utils::io_error_with_path;
 
+use crate::providers::run_command_output;
+
 use super::hash::{compute_snapshot_hash, sha256_hex};
 use super::serial::serialize_snapshot;
-use super::{BuildOptions, Result, SnapshotFile};
+use super::{BuildOptions, Result, SnapshotFile, SnapshotHeader};
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -72,7 +74,14 @@ pub fn build_snapshot_with_options(
     files.sort_by(|a, b| a.path.cmp(&b.path));
 
     let snapshot_hash = compute_snapshot_hash(&files);
-    let serialized = serialize_snapshot(&files, &snapshot_hash);
+    let (git_rev, git_branch) = read_git_metadata(&source);
+    let header = SnapshotHeader {
+        snapshot_hash,
+        file_count: files.len(),
+        git_rev,
+        git_branch,
+    };
+    let serialized = serialize_snapshot(&files, &header);
 
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent).map_err(|err| io_error_with_path(err, parent))?;
@@ -267,6 +276,29 @@ fn collect_files_from_ignore_walk(root: &Path) -> Result<Vec<SnapshotFile>> {
     }
 
     Ok(collected)
+}
+
+// ── Git metadata capture ──────────────────────────────────────────────────────
+
+/// Attempts to read the current git revision and branch from `dir`.
+/// Both fields are best-effort: failures (non-git directory, detached HEAD,
+/// git not on PATH) silently return `None` — they must not abort the build.
+fn read_git_metadata(dir: &Path) -> (Option<String>, Option<String>) {
+    let rev = run_command_output("git", &["rev-parse", "HEAD"], Some(dir))
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let branch = run_command_output("git", &["symbolic-ref", "--short", "HEAD"], Some(dir))
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    (rev, branch)
 }
 
 // ── Path normalization ────────────────────────────────────────────────────────

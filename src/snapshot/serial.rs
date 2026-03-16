@@ -13,13 +13,22 @@ use super::{ListEntry, Result, SnapshotFile, SnapshotHeader};
 // ── Serialization ─────────────────────────────────────────────────────────────
 
 /// Serializes `files` into the canonical `.gcl` S-expression format.
+///
 /// `files` must be in lexicographic path order (the caller is responsible).
-pub(crate) fn serialize_snapshot(files: &[SnapshotFile], snapshot_hash: &str) -> String {
+/// `header.git_rev` and `header.git_branch` are emitted as informational
+/// comments but are **not** included in the structural `snapshot_hash`.
+pub(crate) fn serialize_snapshot(files: &[SnapshotFile], header: &SnapshotHeader) -> String {
     let mut output = String::new();
 
     output.push_str(";; git-closure snapshot v0.1\n");
-    output.push_str(&format!(";; snapshot-hash: {snapshot_hash}\n"));
+    output.push_str(&format!(";; snapshot-hash: {}\n", header.snapshot_hash));
     output.push_str(&format!(";; file-count: {}\n", files.len()));
+    if let Some(rev) = &header.git_rev {
+        output.push_str(&format!(";; git-rev: {rev}\n"));
+    }
+    if let Some(branch) = &header.git_branch {
+        output.push_str(&format!(";; git-branch: {branch}\n"));
+    }
     output.push('\n');
     output.push_str("(\n");
 
@@ -110,6 +119,8 @@ pub(crate) fn parse_snapshot(input: &str) -> Result<(SnapshotHeader, Vec<Snapsho
 fn split_header_body(input: &str) -> Result<(SnapshotHeader, &str)> {
     let mut snapshot_hash = None;
     let mut file_count = None;
+    let mut git_rev = None;
+    let mut git_branch = None;
     let mut body_start = None;
     let mut cursor = 0usize;
 
@@ -126,6 +137,12 @@ fn split_header_body(input: &str) -> Result<(SnapshotHeader, &str)> {
                 file_count = Some(value.trim().parse::<usize>().map_err(|err| {
                     GitClosureError::Parse(format!("invalid file-count header: {err}"))
                 })?);
+            }
+            if let Some(value) = line.strip_prefix(";; git-rev:") {
+                git_rev = Some(value.trim().to_string());
+            }
+            if let Some(value) = line.strip_prefix(";; git-branch:") {
+                git_branch = Some(value.trim().to_string());
             }
             cursor += line_len + 1;
             continue;
@@ -150,6 +167,8 @@ fn split_header_body(input: &str) -> Result<(SnapshotHeader, &str)> {
         SnapshotHeader {
             snapshot_hash,
             file_count,
+            git_rev,
+            git_branch,
         },
         body,
     ))
@@ -370,16 +389,27 @@ pub fn list_snapshot(snapshot: &Path) -> Result<Vec<ListEntry>> {
 /// subcommand to detect snapshots that are not yet in canonical form.
 pub fn fmt_snapshot(snapshot: &Path) -> Result<String> {
     let text = fs::read_to_string(snapshot).map_err(|err| io_error_with_path(err, snapshot))?;
-    let (_header, mut files) = parse_snapshot(&text)?;
+    let (mut header, mut files) = parse_snapshot(&text)?;
     files.sort_by(|a, b| a.path.cmp(&b.path));
-    let hash = super::hash::compute_snapshot_hash(&files);
-    Ok(serialize_snapshot(&files, &hash))
+    header.snapshot_hash = super::hash::compute_snapshot_hash(&files);
+    header.file_count = files.len();
+    Ok(serialize_snapshot(&files, &header))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::snapshot::hash::compute_snapshot_hash;
+
+    /// Build a minimal SnapshotHeader (no git metadata) for use in tests.
+    fn make_header(files: &[SnapshotFile]) -> SnapshotHeader {
+        SnapshotHeader {
+            snapshot_hash: compute_snapshot_hash(files),
+            file_count: files.len(),
+            git_rev: None,
+            git_branch: None,
+        }
+    }
 
     fn make_text_file(path: &str, content: &str) -> SnapshotFile {
         use crate::snapshot::hash::sha256_hex;
@@ -398,10 +428,12 @@ mod tests {
     #[test]
     fn serialize_then_parse_roundtrip_single_text_file() {
         let file = make_text_file("readme.txt", "hello\n");
-        let hash = compute_snapshot_hash(&[file.clone()]);
-        let text = serialize_snapshot(&[file.clone()], &hash);
+        let files_arr = [file.clone()];
+        let header = make_header(&files_arr);
+        let text = serialize_snapshot(&files_arr, &header);
+        let expected_hash = header.snapshot_hash.clone();
         let (header, files) = parse_snapshot(&text).expect("parse serialized snapshot");
-        assert_eq!(header.snapshot_hash, hash);
+        assert_eq!(header.snapshot_hash, expected_hash);
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, file.path);
         assert_eq!(files[0].content, file.content);
@@ -420,8 +452,9 @@ mod tests {
             symlink_target: None,
             content: bytes.clone(),
         };
-        let hash = compute_snapshot_hash(&[file.clone()]);
-        let text = serialize_snapshot(&[file], &hash);
+        let files_arr = [file];
+        let header = make_header(&files_arr);
+        let text = serialize_snapshot(&files_arr, &header);
         let (_, files) = parse_snapshot(&text).expect("parse binary snapshot");
         assert_eq!(files[0].content, bytes);
     }
@@ -429,8 +462,9 @@ mod tests {
     #[test]
     fn parse_snapshot_unknown_plist_key_is_ignored() {
         let file = make_text_file("a.txt", "hi");
-        let hash = compute_snapshot_hash(&[file.clone()]);
-        let text = serialize_snapshot(&[file], &hash);
+        let files_arr = [file];
+        let header = make_header(&files_arr);
+        let text = serialize_snapshot(&files_arr, &header);
         // Inject a future unknown key.
         let modified = text.replace(":mode ", ":future-key \"v\"\n     :mode ");
         let (_, files) = parse_snapshot(&modified).expect("unknown key must be silently ignored");
@@ -463,8 +497,8 @@ mod tests {
         // Intentionally unsorted to verify output is sorted.
         let mut files = vec![file_b.clone(), file_a.clone()];
         files.sort_by(|x, y| x.path.cmp(&y.path));
-        let hash = compute_snapshot_hash(&files);
-        let text = serialize_snapshot(&files, &hash);
+        let header = make_header(&files);
+        let text = serialize_snapshot(&files, &header);
 
         let dir = TempDir::new().unwrap();
         let snap = dir.path().join("snap.gcl");
@@ -495,8 +529,8 @@ mod tests {
         };
         let regular = make_text_file("target.txt", "content");
         let files = vec![symlink_file, regular];
-        let hash = compute_snapshot_hash(&files);
-        let text = serialize_snapshot(&files, &hash);
+        let header = make_header(&files);
+        let text = serialize_snapshot(&files, &header);
 
         let dir = TempDir::new().unwrap();
         let snap = dir.path().join("snap.gcl");
@@ -521,8 +555,9 @@ mod tests {
         use tempfile::TempDir;
 
         let file = make_text_file("src/lib.rs", "fn main() {}\n");
-        let hash = compute_snapshot_hash(&[file.clone()]);
-        let original = serialize_snapshot(&[file], &hash);
+        let files_arr = [file];
+        let header = make_header(&files_arr);
+        let original = serialize_snapshot(&files_arr, &header);
 
         let dir = TempDir::new().unwrap();
         let snap = dir.path().join("snap.gcl");
@@ -550,8 +585,8 @@ mod tests {
         // Build with files in reverse order (z before a) to create an out-of-order snapshot.
         let mut files_sorted = vec![file_z.clone(), file_a.clone()];
         files_sorted.sort_by(|x, y| x.path.cmp(&y.path));
-        let hash = compute_snapshot_hash(&files_sorted);
-        let canonical = serialize_snapshot(&files_sorted, &hash);
+        let header = make_header(&files_sorted);
+        let canonical = serialize_snapshot(&files_sorted, &header);
 
         let dir = TempDir::new().unwrap();
         let snap = dir.path().join("snap.gcl");
@@ -564,6 +599,107 @@ mod tests {
         assert!(
             a_pos < z_pos,
             "a.txt must appear before z.txt in canonical output"
+        );
+    }
+
+    // ── git metadata header tests (T-32) ─────────────────────────────────────
+
+    #[test]
+    fn serialize_with_git_metadata_emits_header_comments() {
+        let file = make_text_file("src/lib.rs", "fn main() {}\n");
+        let files = [file];
+        let hash = compute_snapshot_hash(&files);
+        let header = SnapshotHeader {
+            snapshot_hash: hash,
+            file_count: files.len(),
+            git_rev: Some("deadbeef1234567890abcdef1234567890abcdef".to_string()),
+            git_branch: Some("main".to_string()),
+        };
+        let text = serialize_snapshot(&files, &header);
+        assert!(
+            text.contains(";; git-rev: deadbeef1234567890abcdef1234567890abcdef\n"),
+            "serialized text must contain git-rev comment, got: {text}"
+        );
+        assert!(
+            text.contains(";; git-branch: main\n"),
+            "serialized text must contain git-branch comment, got: {text}"
+        );
+    }
+
+    #[test]
+    fn git_metadata_not_included_in_snapshot_hash() {
+        let file = make_text_file("src/lib.rs", "fn main() {}\n");
+        let files = [file];
+        let hash = compute_snapshot_hash(&files);
+
+        let header_without_meta = SnapshotHeader {
+            snapshot_hash: hash.clone(),
+            file_count: files.len(),
+            git_rev: None,
+            git_branch: None,
+        };
+        let header_with_meta = SnapshotHeader {
+            snapshot_hash: hash.clone(),
+            file_count: files.len(),
+            git_rev: Some("abc123".to_string()),
+            git_branch: Some("feature-branch".to_string()),
+        };
+
+        let text_without = serialize_snapshot(&files, &header_without_meta);
+        let text_with = serialize_snapshot(&files, &header_with_meta);
+
+        // The snapshot-hash comment must be identical in both.
+        let hash_line = format!(";; snapshot-hash: {hash}\n");
+        assert!(
+            text_without.contains(&hash_line),
+            "snapshot without meta must contain hash line"
+        );
+        assert!(
+            text_with.contains(&hash_line),
+            "snapshot with meta must contain same hash line"
+        );
+
+        // The two serializations must differ only in the metadata lines.
+        assert_ne!(
+            text_without, text_with,
+            "snapshots with and without git metadata must differ in text"
+        );
+    }
+
+    #[test]
+    fn git_metadata_roundtrips_through_parse() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let file = make_text_file("readme.txt", "hello\n");
+        let files = [file];
+        let hash = compute_snapshot_hash(&files);
+        let header = SnapshotHeader {
+            snapshot_hash: hash,
+            file_count: files.len(),
+            git_rev: Some("cafebabe".to_string()),
+            git_branch: Some("release/v1".to_string()),
+        };
+        let text = serialize_snapshot(&files, &header);
+
+        let dir = TempDir::new().unwrap();
+        let snap = dir.path().join("snap.gcl");
+        fs::write(&snap, text.as_bytes()).unwrap();
+
+        // Parse the file back; metadata fields must survive the round-trip.
+        let (parsed_header, _) = parse_snapshot(&text).expect("parse must succeed");
+        assert_eq!(parsed_header.git_rev.as_deref(), Some("cafebabe"));
+        assert_eq!(parsed_header.git_branch.as_deref(), Some("release/v1"));
+
+        // fmt_snapshot must preserve metadata.
+        let formatted = fmt_snapshot(&snap).expect("fmt_snapshot must succeed");
+        assert!(
+            formatted.contains(";; git-rev: cafebabe\n"),
+            "fmt_snapshot must preserve git-rev, got: {formatted}"
+        );
+        assert!(
+            formatted.contains(";; git-branch: release/v1\n"),
+            "fmt_snapshot must preserve git-branch, got: {formatted}"
         );
     }
 }

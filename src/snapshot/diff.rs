@@ -250,10 +250,17 @@ mod tests {
     }
 
     fn write_snap(dir: &TempDir, name: &str, files: &[SnapshotFile]) -> std::path::PathBuf {
+        use crate::snapshot::SnapshotHeader;
         let mut sorted = files.to_vec();
         sorted.sort_by(|a, b| a.path.cmp(&b.path));
-        let hash = compute_snapshot_hash(&sorted);
-        let text = serialize_snapshot(&sorted, &hash);
+        let snapshot_hash = compute_snapshot_hash(&sorted);
+        let header = SnapshotHeader {
+            snapshot_hash,
+            file_count: sorted.len(),
+            git_rev: None,
+            git_branch: None,
+        };
+        let text = serialize_snapshot(&sorted, &header);
         let path = dir.path().join(name);
         fs::write(&path, text.as_bytes()).unwrap();
         path
