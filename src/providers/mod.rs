@@ -453,16 +453,25 @@ fn extract_github_tarball(bytes: &[u8], destination: &Path) -> Result<()> {
 
         let output_path = destination.join(&relative);
         if let Some(parent) = output_path.parent() {
+            ensure_no_symlink_ancestors(destination, parent)?;
             fs::create_dir_all(parent)?;
         }
 
         let entry_type = entry.header().entry_type();
         if entry_type.is_dir() {
+            reject_if_symlink(&output_path)?;
             fs::create_dir_all(&output_path)?;
             continue;
         }
 
         if entry_type.is_file() {
+            reject_if_symlink(&output_path)?;
+            if output_path.exists() {
+                return Err(GitClosureError::Parse(format!(
+                    "github-api: duplicate file entry path in archive: {}",
+                    relative.display()
+                )));
+            }
             entry.unpack(&output_path).map_err(|err| {
                 GitClosureError::Parse(format!(
                     "github-api: failed to unpack file {}: {err}",
@@ -473,6 +482,13 @@ fn extract_github_tarball(bytes: &[u8], destination: &Path) -> Result<()> {
         }
 
         if entry_type.is_symlink() {
+            reject_if_symlink(&output_path)?;
+            if output_path.exists() {
+                return Err(GitClosureError::Parse(format!(
+                    "github-api: duplicate symlink entry path in archive: {}",
+                    relative.display()
+                )));
+            }
             let target = entry.link_name().map_err(|err| {
                 GitClosureError::Parse(format!("github-api: invalid symlink entry target: {err}"))
             })?;
@@ -482,9 +498,6 @@ fn extract_github_tarball(bytes: &[u8], destination: &Path) -> Result<()> {
 
             #[cfg(unix)]
             {
-                if output_path.exists() {
-                    fs::remove_file(&output_path)?;
-                }
                 std::os::unix::fs::symlink(&target, &output_path)?;
             }
             #[cfg(not(unix))]
@@ -509,6 +522,37 @@ fn extract_github_tarball(bytes: &[u8], destination: &Path) -> Result<()> {
         ));
     }
 
+    Ok(())
+}
+
+fn ensure_no_symlink_ancestors(root: &Path, target: &Path) -> Result<()> {
+    let relative = target.strip_prefix(root).map_err(|_| {
+        GitClosureError::UnsafePath(format!(
+            "github-api: target path escapes destination root: {}",
+            target.display()
+        ))
+    })?;
+
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        current.push(component.as_os_str());
+        reject_if_symlink(&current)?;
+    }
+
+    Ok(())
+}
+
+fn reject_if_symlink(path: &Path) -> Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Err(GitClosureError::UnsafePath(format!(
+            "github-api: path component is a symlink: {}",
+            path.display()
+        )));
+    }
     Ok(())
 }
 
@@ -1039,6 +1083,56 @@ mod tests {
         super::extract_github_tarball(&tarball, &dest).expect("extract archive");
         let target = std::fs::read_link(dest.join("link")).expect("read extracted symlink");
         assert_eq!(target, std::path::PathBuf::from("target.txt"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn github_archive_extraction_rejects_symlink_parent_escape() {
+        let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+        {
+            let mut builder = tar::Builder::new(&mut gz);
+
+            let mut dir_link_header = tar::Header::new_gnu();
+            dir_link_header.set_entry_type(tar::EntryType::Symlink);
+            dir_link_header.set_size(0);
+            dir_link_header.set_mode(0o777);
+            dir_link_header
+                .set_link_name("../escape")
+                .expect("set symlink target");
+            dir_link_header.set_cksum();
+            builder
+                .append_data(&mut dir_link_header, "repo-abc/dir", std::io::empty())
+                .expect("append symlinked directory entry");
+
+            let mut file_header = tar::Header::new_gnu();
+            let payload = b"owned\n";
+            file_header.set_size(payload.len() as u64);
+            file_header.set_mode(0o644);
+            file_header.set_cksum();
+            builder
+                .append_data(&mut file_header, "repo-abc/dir/payload.txt", &payload[..])
+                .expect("append nested file");
+
+            builder.finish().expect("finish tar builder");
+        }
+        let tarball = gz.finish().expect("finish gzip stream");
+
+        let tmp = tempfile::TempDir::new().expect("create tempdir");
+        let dest = tmp.path().join("out");
+        std::fs::create_dir_all(&dest).expect("create destination dir");
+        let escape = tmp.path().join("escape");
+        std::fs::create_dir_all(&escape).expect("create would-be escape dir");
+
+        let err = super::extract_github_tarball(&tarball, &dest)
+            .expect_err("archive writing through symlink parent must be rejected");
+        assert!(
+            matches!(err, GitClosureError::UnsafePath(_)),
+            "expected UnsafePath, got {err:?}"
+        );
+        assert!(
+            !escape.join("payload.txt").exists(),
+            "extraction must not write outside destination root"
+        );
     }
 
     #[test]
