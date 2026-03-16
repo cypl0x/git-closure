@@ -1,13 +1,18 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::io::Read as _;
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
+use flate2::read::GzDecoder;
 use tempfile::TempDir;
 
 use crate::error::GitClosureError;
 use crate::utils::truncate_stderr;
 
 type Result<T> = std::result::Result<T, GitClosureError>;
+
+const GITHUB_API_BASE: &str = "https://api.github.com/repos";
+const GITHUB_TOKEN_ENV: &str = "GCL_GITHUB_TOKEN";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderKind {
@@ -159,9 +164,8 @@ fn choose_provider(spec: &SourceSpec, requested: ProviderKind) -> Result<Provide
     let selected = match spec {
         SourceSpec::LocalPath(_) => ProviderKind::Local,
         SourceSpec::NixFlakeRef(_) => ProviderKind::Nix,
-        SourceSpec::GitHubRepo { .. }
-        | SourceSpec::GitLabRepo { .. }
-        | SourceSpec::GitRemoteUrl(_) => ProviderKind::GitClone,
+        SourceSpec::GitHubRepo { .. } => ProviderKind::GithubApi,
+        SourceSpec::GitLabRepo { .. } | SourceSpec::GitRemoteUrl(_) => ProviderKind::GitClone,
         SourceSpec::Unknown(value) => {
             return Err(GitClosureError::Parse(format!(
                 "unsupported source syntax for auto provider: {value}"
@@ -290,13 +294,16 @@ impl Provider for NixProvider {
 pub struct GithubApiProvider;
 
 impl Provider for GithubApiProvider {
-    fn fetch(&self, _source: &str) -> Result<FetchedSource> {
-        // TODO: implement GitHub tarball fetch via GET /repos/{owner}/{repo}/tarball/{ref}.
-        Err(GitClosureError::Parse(
-            "--provider github-api is not yet implemented; \
-             use --provider git-clone or omit --provider for auto-detection"
-                .to_string(),
-        ))
+    fn fetch(&self, source: &str) -> Result<FetchedSource> {
+        let parsed = parse_github_api_source(source)?;
+        let tarball = download_github_tarball(&parsed)?;
+
+        let tempdir = TempDir::new()?;
+        let checkout = tempdir.path().join("repo");
+        fs::create_dir_all(&checkout)?;
+
+        extract_github_tarball(&tarball, &checkout)?;
+        Ok(FetchedSource::temporary(checkout, tempdir))
     }
 }
 
@@ -309,6 +316,243 @@ struct NixFlakeMetadata {
 struct ParsedGitSource {
     url: String,
     reference: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedGithubApiSource {
+    owner: String,
+    repo: String,
+    reference: Option<String>,
+}
+
+impl ParsedGithubApiSource {
+    fn archive_url(&self) -> String {
+        let reference = self.reference.as_deref().unwrap_or("HEAD");
+        format!(
+            "{GITHUB_API_BASE}/{}/{}/tarball/{reference}",
+            self.owner, self.repo
+        )
+    }
+
+    fn display_name(&self) -> String {
+        let reference = self.reference.as_deref().unwrap_or("HEAD");
+        format!("{}/{}@{reference}", self.owner, self.repo)
+    }
+}
+
+fn parse_github_api_source(source: &str) -> Result<ParsedGithubApiSource> {
+    match SourceSpec::parse(source)? {
+        SourceSpec::GitHubRepo {
+            owner,
+            repo,
+            reference,
+        } => Ok(ParsedGithubApiSource {
+            owner,
+            repo,
+            reference,
+        }),
+        _ => Err(GitClosureError::Parse(format!(
+            "github-api provider requires a GitHub source (gh:owner/repo[@ref] or https://github.com/owner/repo[@ref]); got: {source}"
+        ))),
+    }
+}
+
+fn download_github_tarball(source: &ParsedGithubApiSource) -> Result<Vec<u8>> {
+    let url = source.archive_url();
+    let token = std::env::var(GITHUB_TOKEN_ENV)
+        .ok()
+        .filter(|v| !v.is_empty());
+
+    let agent = ureq::builder().build();
+    let mut request = agent
+        .get(&url)
+        .set("Accept", "application/vnd.github+json")
+        .set("User-Agent", "git-closure");
+    if let Some(token) = &token {
+        request = request.set("Authorization", &format!("Bearer {token}"));
+    }
+
+    match request.call() {
+        Ok(response) => {
+            let mut body = Vec::new();
+            response
+                .into_reader()
+                .read_to_end(&mut body)
+                .map_err(|err| {
+                    GitClosureError::Parse(format!(
+                        "github-api: failed to read tarball response for {}: {err}",
+                        source.display_name()
+                    ))
+                })?;
+            Ok(body)
+        }
+        Err(ureq::Error::Status(status, response)) => {
+            let rate_remaining = response.header("X-RateLimit-Remaining").map(str::to_string);
+            let body = response.into_string().unwrap_or_default();
+            Err(github_api_status_error(
+                status,
+                rate_remaining.as_deref(),
+                &source.display_name(),
+                &body,
+            ))
+        }
+        Err(ureq::Error::Transport(err)) => Err(GitClosureError::Parse(format!(
+            "github-api: request failed for {}: {err}",
+            source.display_name()
+        ))),
+    }
+}
+
+fn github_api_status_error(
+    status: u16,
+    rate_remaining: Option<&str>,
+    source_name: &str,
+    body: &str,
+) -> GitClosureError {
+    let body_summary = body.trim();
+    let suffix = if body_summary.is_empty() {
+        String::new()
+    } else {
+        format!(": {body_summary}")
+    };
+
+    match status {
+        401 => GitClosureError::Parse(format!(
+            "github-api: authentication failed for {source_name} (HTTP 401). Set {GITHUB_TOKEN_ENV}."
+        )),
+        403 if rate_remaining == Some("0") => GitClosureError::Parse(format!(
+            "github-api: rate limit exceeded while downloading {source_name}. Set {GITHUB_TOKEN_ENV} for higher limits."
+        )),
+        404 => GitClosureError::Parse(format!(
+            "github-api: repository or reference not found: {source_name}"
+        )),
+        _ => GitClosureError::Parse(format!(
+            "github-api: request failed for {source_name} with HTTP {status}{suffix}"
+        )),
+    }
+}
+
+fn extract_github_tarball(bytes: &[u8], destination: &Path) -> Result<()> {
+    let decoder = GzDecoder::new(bytes);
+    let mut archive = tar::Archive::new(decoder);
+    let mut top_level: Option<std::ffi::OsString> = None;
+
+    for entry_result in archive.entries().map_err(|err| {
+        GitClosureError::Parse(format!("github-api: failed to read tar entries: {err}"))
+    })? {
+        let mut entry = entry_result.map_err(|err| {
+            GitClosureError::Parse(format!("github-api: invalid tar entry: {err}"))
+        })?;
+        let entry_path = entry.path().map_err(|err| {
+            GitClosureError::Parse(format!("github-api: invalid tar path entry: {err}"))
+        })?;
+        let relative = strip_github_archive_prefix(entry_path.as_ref(), &mut top_level)?;
+        let Some(relative) = relative else {
+            continue;
+        };
+
+        let output_path = destination.join(&relative);
+        if let Some(parent) = output_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let entry_type = entry.header().entry_type();
+        if entry_type.is_dir() {
+            fs::create_dir_all(&output_path)?;
+            continue;
+        }
+
+        if entry_type.is_file() {
+            entry.unpack(&output_path).map_err(|err| {
+                GitClosureError::Parse(format!(
+                    "github-api: failed to unpack file {}: {err}",
+                    output_path.display()
+                ))
+            })?;
+            continue;
+        }
+
+        if entry_type.is_symlink() {
+            let target = entry.link_name().map_err(|err| {
+                GitClosureError::Parse(format!("github-api: invalid symlink entry target: {err}"))
+            })?;
+            let target = target.ok_or_else(|| {
+                GitClosureError::Parse("github-api: symlink entry missing target".to_string())
+            })?;
+
+            #[cfg(unix)]
+            {
+                if output_path.exists() {
+                    fs::remove_file(&output_path)?;
+                }
+                std::os::unix::fs::symlink(&target, &output_path)?;
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = target;
+                return Err(GitClosureError::Parse(
+                    "github-api: symlink extraction is unsupported on this platform".to_string(),
+                ));
+            }
+            continue;
+        }
+
+        return Err(GitClosureError::Parse(format!(
+            "github-api: unsupported tar entry type for {}",
+            relative.display()
+        )));
+    }
+
+    if top_level.is_none() {
+        return Err(GitClosureError::Parse(
+            "github-api: archive contained no entries".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn strip_github_archive_prefix(
+    path: &Path,
+    top_level: &mut Option<std::ffi::OsString>,
+) -> Result<Option<PathBuf>> {
+    let mut components = path.components();
+    let first = match components.next() {
+        Some(Component::Normal(name)) => name.to_os_string(),
+        _ => {
+            return Err(GitClosureError::UnsafePath(path.display().to_string()));
+        }
+    };
+
+    match top_level {
+        Some(existing) if existing != &first => {
+            return Err(GitClosureError::Parse(format!(
+                "github-api: archive has multiple top-level directories: {} and {}",
+                existing.to_string_lossy(),
+                first.to_string_lossy(),
+            )));
+        }
+        Some(_) => {}
+        None => {
+            *top_level = Some(first);
+        }
+    }
+
+    let mut relative = PathBuf::new();
+    for component in components {
+        match component {
+            Component::Normal(part) => relative.push(part),
+            _ => {
+                return Err(GitClosureError::UnsafePath(path.display().to_string()));
+            }
+        }
+    }
+
+    if relative.as_os_str().is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(relative))
 }
 
 fn parse_git_source(source: &str) -> Result<ParsedGitSource> {
@@ -426,13 +670,35 @@ pub(crate) fn run_command_status(
 #[cfg(test)]
 mod tests {
     use super::{
-        choose_provider, fetch_source, parse_git_source, parse_nix_metadata_path,
-        run_command_output, run_command_status, split_repo_ref, GitCloneProvider, NixProvider,
-        Provider, ProviderKind, SourceSpec,
+        choose_provider, fetch_source, github_api_status_error, parse_git_source,
+        parse_github_api_source, parse_nix_metadata_path, run_command_output, run_command_status,
+        split_repo_ref, strip_github_archive_prefix, GitCloneProvider, NixProvider,
+        ParsedGithubApiSource, Provider, ProviderKind, SourceSpec,
     };
     use crate::error::GitClosureError;
     use crate::utils::truncate_stderr;
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
     use std::io::ErrorKind;
+    use std::path::Path;
+
+    fn make_gzipped_tar(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+        {
+            let mut builder = tar::Builder::new(&mut gz);
+            for (path, bytes) in entries {
+                let mut header = tar::Header::new_gnu();
+                header.set_size(bytes.len() as u64);
+                header.set_mode(0o644);
+                header.set_cksum();
+                builder
+                    .append_data(&mut header, *path, *bytes)
+                    .expect("append tar file entry");
+            }
+            builder.finish().expect("finish tar builder");
+        }
+        gz.finish().expect("finish gzip stream")
+    }
 
     #[test]
     fn split_repo_ref_parses_optional_reference() {
@@ -494,7 +760,7 @@ mod tests {
         };
         assert_eq!(
             choose_provider(&gh, ProviderKind::Auto).expect("choose git clone for github"),
-            ProviderKind::GitClone
+            ProviderKind::GithubApi
         );
 
         let nix = SourceSpec::NixFlakeRef("github:owner/repo".to_string());
@@ -644,66 +910,172 @@ mod tests {
     }
 
     #[test]
-    fn github_api_provider_returns_not_implemented_error() {
+    fn parse_github_api_source_accepts_gh_and_https_syntax() {
+        let gh = parse_github_api_source("gh:owner/repo@main").expect("parse gh syntax");
+        assert_eq!(
+            gh,
+            ParsedGithubApiSource {
+                owner: "owner".to_string(),
+                repo: "repo".to_string(),
+                reference: Some("main".to_string())
+            }
+        );
+
+        let https =
+            parse_github_api_source("https://github.com/owner/repo").expect("parse https syntax");
+        assert_eq!(
+            https,
+            ParsedGithubApiSource {
+                owner: "owner".to_string(),
+                repo: "repo".to_string(),
+                reference: None
+            }
+        );
+    }
+
+    #[test]
+    fn parse_github_api_source_rejects_non_github_inputs() {
+        let err = parse_github_api_source("gl:group/repo").expect_err("gl source must fail");
+        assert!(
+            matches!(err, GitClosureError::Parse(_)),
+            "expected parse error for non-github source"
+        );
+    }
+
+    #[test]
+    fn github_api_status_error_maps_auth_and_rate_limit_cases() {
+        let auth = github_api_status_error(401, None, "owner/repo@HEAD", "");
+        assert!(
+            auth.to_string().contains("authentication failed")
+                && auth.to_string().contains("GCL_GITHUB_TOKEN"),
+            "401 must mention authentication and token env var"
+        );
+
+        let rate = github_api_status_error(403, Some("0"), "owner/repo@HEAD", "rate limited");
+        assert!(
+            rate.to_string().contains("rate limit")
+                && rate.to_string().contains("GCL_GITHUB_TOKEN"),
+            "rate-limit errors must be actionable"
+        );
+
+        let missing = github_api_status_error(404, None, "owner/repo@badref", "");
+        assert!(
+            missing.to_string().contains("not found")
+                && missing.to_string().contains("owner/repo@badref"),
+            "404 must mention missing repo/ref"
+        );
+    }
+
+    #[test]
+    fn strip_github_archive_prefix_rejects_parent_traversal() {
+        let mut top = None;
+        let err = strip_github_archive_prefix(Path::new("repo-abc/../../evil.txt"), &mut top)
+            .expect_err("path traversal in archive must be rejected");
+        assert!(matches!(err, GitClosureError::UnsafePath(_)));
+    }
+
+    #[test]
+    fn split_github_archive_prefix_strips_top_level_directory() {
+        let mut top = None;
+        let rel = strip_github_archive_prefix(Path::new("repo-abc/src/lib.rs"), &mut top)
+            .expect("valid github archive entry path")
+            .expect("non-root entry must remain after stripping");
+        assert_eq!(rel, std::path::PathBuf::from("src/lib.rs"));
+    }
+
+    #[test]
+    fn github_archive_extraction_strips_prefix_and_writes_files() {
+        let tarball = make_gzipped_tar(&[
+            ("repo-abc/README.md", b"hello\n"),
+            ("repo-abc/src/lib.rs", b"pub fn x() {}\n"),
+        ]);
+        let tmp = tempfile::TempDir::new().expect("create tempdir");
+        let dest = tmp.path().join("out");
+        std::fs::create_dir_all(&dest).expect("create destination dir");
+
+        super::extract_github_tarball(&tarball, &dest).expect("extract archive");
+        let readme = std::fs::read_to_string(dest.join("README.md")).expect("read README");
+        let lib = std::fs::read_to_string(dest.join("src/lib.rs")).expect("read src/lib.rs");
+        assert_eq!(readme, "hello\n");
+        assert_eq!(lib, "pub fn x() {}\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn github_archive_extraction_preserves_symlink_entries() {
+        let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+        {
+            let mut builder = tar::Builder::new(&mut gz);
+
+            let mut file_header = tar::Header::new_gnu();
+            let file_bytes = b"target\n";
+            file_header.set_size(file_bytes.len() as u64);
+            file_header.set_mode(0o644);
+            file_header.set_cksum();
+            builder
+                .append_data(&mut file_header, "repo-abc/target.txt", &file_bytes[..])
+                .expect("append regular file");
+
+            let mut link_header = tar::Header::new_gnu();
+            link_header.set_entry_type(tar::EntryType::Symlink);
+            link_header.set_size(0);
+            link_header.set_mode(0o777);
+            link_header
+                .set_link_name("target.txt")
+                .expect("set symlink target");
+            link_header.set_cksum();
+            builder
+                .append_data(&mut link_header, "repo-abc/link", std::io::empty())
+                .expect("append symlink entry");
+
+            builder.finish().expect("finish tar builder");
+        }
+        let tarball = gz.finish().expect("finish gzip stream");
+
+        let tmp = tempfile::TempDir::new().expect("create tempdir");
+        let dest = tmp.path().join("out");
+        std::fs::create_dir_all(&dest).expect("create destination dir");
+
+        super::extract_github_tarball(&tarball, &dest).expect("extract archive");
+        let target = std::fs::read_link(dest.join("link")).expect("read extracted symlink");
+        assert_eq!(target, std::path::PathBuf::from("target.txt"));
+    }
+
+    #[test]
+    fn github_api_provider_rejects_non_github_source() {
         use super::GithubApiProvider;
         let provider = GithubApiProvider;
-        let err = match provider.fetch("owner/repo") {
-            Ok(_) => panic!("GithubApiProvider must return an error until implemented"),
+        let err = match provider.fetch("gl:group/repo") {
+            Ok(_) => panic!("github-api provider must reject non-github source syntax"),
             Err(e) => e,
         };
         assert!(
             matches!(err, GitClosureError::Parse(_)),
-            "expected Parse(not-implemented), got {err:?}"
+            "expected Parse error, got {err:?}"
         );
         let msg = err.to_string();
         assert!(
-            msg.contains("not implemented") || msg.contains("github-api"),
-            "error message must mention 'not implemented' or 'github-api', got: {msg:?}"
+            msg.contains("github-api") || msg.contains("GitHub"),
+            "error message must mention github-api source requirement, got: {msg:?}"
         );
     }
 
     #[test]
-    fn auto_provider_gh_shorthand_does_not_hit_unimplemented_github_api() {
-        let err = match fetch_source("gh:owner/repo", ProviderKind::Auto) {
-            Ok(_) => return,
-            Err(err) => err,
-        };
-
-        match err {
-            GitClosureError::CommandExitFailure { command, .. }
-            | GitClosureError::CommandSpawnFailed { command, .. } => {
-                assert_eq!(command, "git");
-            }
-            GitClosureError::Parse(msg) => {
-                assert!(
-                    !msg.contains("github-api") && !msg.contains("not implemented"),
-                    "auto gh source must not route to unimplemented github-api: {msg:?}"
-                );
-            }
-            other => panic!("unexpected error kind for auto gh source: {other:?}"),
-        }
+    fn auto_provider_github_repo_routes_to_github_api() {
+        let gh = SourceSpec::parse("gh:owner/repo").expect("parse gh source");
+        assert_eq!(
+            choose_provider(&gh, ProviderKind::Auto).expect("choose provider"),
+            ProviderKind::GithubApi
+        );
     }
 
     #[test]
-    fn auto_provider_github_https_does_not_hit_unimplemented_github_api() {
-        let err = match fetch_source("https://github.com/owner/repo", ProviderKind::Auto) {
-            Ok(_) => return,
-            Err(err) => err,
-        };
-
-        match err {
-            GitClosureError::CommandExitFailure { command, .. }
-            | GitClosureError::CommandSpawnFailed { command, .. } => {
-                assert_eq!(command, "git");
-            }
-            GitClosureError::Parse(msg) => {
-                assert!(
-                    !msg.contains("github-api") && !msg.contains("not implemented"),
-                    "auto github https source must not route to unimplemented github-api: {msg:?}"
-                );
-            }
-            other => panic!("unexpected error kind for auto github https source: {other:?}"),
-        }
+    fn auto_provider_github_https_routes_to_github_api() {
+        let gh = SourceSpec::parse("https://github.com/owner/repo").expect("parse github https");
+        assert_eq!(
+            choose_provider(&gh, ProviderKind::Auto).expect("choose provider"),
+            ProviderKind::GithubApi
+        );
     }
 
     #[test]

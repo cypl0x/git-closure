@@ -1,2 +1,1 @@
-note: writing snapshot to repo.gcl
-error: parse error: --provider github-api is not yet implemented; use --provider git-clone or omit --provider for auto-detection
+error: parse error: github-api provider requires a GitHub source (gh:owner/repo[@ref] or https://github.com/owner/repo[@ref]); got: gl:group/repo
