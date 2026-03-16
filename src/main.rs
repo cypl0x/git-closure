@@ -1,13 +1,12 @@
 use std::path::PathBuf;
 use std::{io, process};
 
-use anyhow::Result;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{generate, shells};
 
 use git_closure::{
     build_snapshot_from_source, materialize_snapshot, providers::ProviderKind, verify_snapshot,
-    BuildOptions,
+    BuildOptions, GitClosureError,
 };
 
 #[derive(Parser, Debug)]
@@ -81,7 +80,14 @@ impl From<BuildProvider> for ProviderKind {
     }
 }
 
-fn main() -> Result<()> {
+fn main() {
+    if let Err(e) = run() {
+        eprintln!("error: {e}");
+        process::exit(1);
+    }
+}
+
+fn run() -> Result<(), GitClosureError> {
     let cli = Cli::parse();
 
     match cli.command {
