@@ -363,6 +363,17 @@ mod tests {
     }
 
     #[test]
+    fn normalize_relative_path_emits_forward_slashes() {
+        let nested = Path::new("dir").join("sub").join("file.txt");
+        let normalized = normalize_relative_path(&nested).expect("normalize nested path");
+        assert_eq!(normalized, "dir/sub/file.txt");
+        assert!(
+            !normalized.contains('\\'),
+            "snapshot path must not use backslash separators"
+        );
+    }
+
+    #[test]
     fn normalize_relative_path_rejects_absolute() {
         assert!(normalize_relative_path(Path::new("/etc/passwd")).is_err());
     }

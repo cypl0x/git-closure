@@ -266,4 +266,50 @@ mod tests {
             "expected CommandExitFailure, got {err:?}"
         );
     }
+
+    #[test]
+    fn ensure_git_source_is_clean_non_repo_error_includes_stderr_context() {
+        let temp = tempfile::TempDir::new().expect("create tempdir");
+        let context = GitRepoContext {
+            workdir: temp.path().to_path_buf(),
+            source_prefix: PathBuf::new(),
+        };
+
+        let err = ensure_git_source_is_clean(&context).expect_err("non-repo should fail");
+        match err {
+            GitClosureError::CommandExitFailure { stderr, .. } => {
+                let display = stderr.to_lowercase();
+                assert!(
+                    display.contains("not a git repository")
+                        || display.contains("work tree")
+                        || display.contains("git"),
+                    "stderr payload should contain actionable git context, got: {stderr:?}"
+                );
+            }
+            other => panic!("expected CommandExitFailure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn git_ls_files_non_repo_error_includes_stderr_context() {
+        let temp = tempfile::TempDir::new().expect("create tempdir");
+        let context = GitRepoContext {
+            workdir: temp.path().to_path_buf(),
+            source_prefix: PathBuf::new(),
+        };
+
+        let err = git_ls_files(&context, false).expect_err("non-repo should fail");
+        match err {
+            GitClosureError::CommandExitFailure { stderr, .. } => {
+                let display = stderr.to_lowercase();
+                assert!(
+                    display.contains("not a git repository")
+                        || display.contains("work tree")
+                        || display.contains("git"),
+                    "stderr payload should contain actionable git context, got: {stderr:?}"
+                );
+            }
+            other => panic!("expected CommandExitFailure, got {other:?}"),
+        }
+    }
 }

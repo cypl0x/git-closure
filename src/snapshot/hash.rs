@@ -126,4 +126,32 @@ mod tests {
             "symlink and regular file with same path must produce different hashes"
         );
     }
+
+    #[test]
+    fn compute_snapshot_hash_ignores_regular_file_payload_bytes() {
+        let mut left = SnapshotFile {
+            path: "same.txt".into(),
+            sha256: "abc123".into(),
+            mode: "644".into(),
+            size: 3,
+            encoding: None,
+            symlink_target: None,
+            content: b"one".to_vec(),
+        };
+        let mut right = left.clone();
+        right.content = b"two".to_vec();
+
+        assert_eq!(
+            compute_snapshot_hash(&[left.clone()]),
+            compute_snapshot_hash(&[right.clone()]),
+            "snapshot-hash must not depend on raw payload bytes when path/mode/sha256 are identical"
+        );
+
+        left.sha256 = "different".into();
+        assert_ne!(
+            compute_snapshot_hash(&[left]),
+            compute_snapshot_hash(&[right]),
+            "snapshot-hash must still depend on :sha256 field"
+        );
+    }
 }

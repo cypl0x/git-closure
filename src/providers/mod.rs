@@ -437,6 +437,13 @@ mod tests {
                     !stderr.is_empty(),
                     "stderr should be captured for nix exit failure"
                 );
+                let lowered = stderr.to_lowercase();
+                assert!(
+                    lowered.contains("does not exist")
+                        || lowered.contains("while fetching the input")
+                        || lowered.contains("nix"),
+                    "stderr should include actionable nix context, got: {stderr:?}"
+                );
             }
             GitClosureError::CommandSpawnFailed { command, .. } => {
                 // nix binary is not installed; spawn failure is the expected path.
