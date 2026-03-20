@@ -106,8 +106,17 @@ pub(crate) fn quote_string(input: &str) -> String {
 /// parsed entries.
 #[derive(Debug, Clone, Default)]
 pub struct ParseLimits {
+    /// Maximum number of file entries accepted in the snapshot body.
+    ///
+    /// When set, parsing fails once the decoded entry count exceeds this value.
     pub max_entry_count: Option<usize>,
+    /// Maximum decoded content size (bytes) for any single file entry.
+    ///
+    /// Applies to regular files after Base64 decoding.
     pub max_file_bytes: Option<u64>,
+    /// Maximum total decoded content size (bytes) across all regular files.
+    ///
+    /// Applies to the cumulative decoded payload across the snapshot body.
     pub max_total_bytes: Option<u64>,
 }
 
