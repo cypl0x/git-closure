@@ -78,7 +78,7 @@ fn render_markdown(header: &SnapshotHeader, entries: &[ListEntry]) -> String {
     for e in entries {
         let entry_type = if e.is_symlink { "symlink" } else { "file" };
         let sha256_display = if e.is_symlink {
-            format!("→ {}", e.symlink_target.as_deref().unwrap_or(""))
+            format!("→ {}", md_escape(e.symlink_target.as_deref().unwrap_or("")))
         } else {
             format!("`{}`", sha256_prefix(&e.sha256))
         };
@@ -445,6 +445,32 @@ mod tests {
         assert_eq!(
             link_entry["symlink_target"],
             serde_json::Value::from("a.txt")
+        );
+    }
+
+    #[test]
+    fn render_markdown_escapes_symlink_target_pipe() {
+        let dir = TempDir::new().unwrap();
+        let files = vec![symlink_file("link", "../foo|bar")];
+        let snap = write_snap(&dir, &files, None, None);
+
+        let markdown = render_snapshot(&snap, RenderFormat::Markdown).unwrap();
+        assert!(
+            markdown.contains("→ ../foo\\|bar"),
+            "markdown must escape pipe characters in symlink targets"
+        );
+    }
+
+    #[test]
+    fn render_markdown_escapes_symlink_target_backtick() {
+        let dir = TempDir::new().unwrap();
+        let files = vec![symlink_file("link", "`etc/passwd`")];
+        let snap = write_snap(&dir, &files, None, None);
+
+        let markdown = render_snapshot(&snap, RenderFormat::Markdown).unwrap();
+        assert!(
+            markdown.contains("→ \\`etc/passwd\\`"),
+            "markdown must escape backticks in symlink targets"
         );
     }
 }
