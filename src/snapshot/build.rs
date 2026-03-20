@@ -18,7 +18,7 @@ use crate::git::{
     untracked_paths_from_status, GitRepoContext,
 };
 use crate::providers::{choose_provider, fetch_source, Provider, ProviderKind, SourceSpec};
-use crate::utils::io_error_with_path;
+use crate::utils::{io_error_with_path, truncate_stderr};
 
 use crate::providers::run_command_output;
 
@@ -291,21 +291,52 @@ fn collect_files_from_ignore_walk(root: &Path) -> Result<Vec<SnapshotFile>> {
 /// Both fields are best-effort: failures (non-git directory, detached HEAD,
 /// git not on PATH) silently return `None` — they must not abort the build.
 fn read_git_metadata(dir: &Path) -> (Option<String>, Option<String>) {
+    let mut warned = false;
     let rev = run_command_output("git", &["rev-parse", "HEAD"], Some(dir))
         .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+        .and_then(|output| parse_git_metadata_field_output(output, &mut warned));
 
     let branch = run_command_output("git", &["symbolic-ref", "--short", "HEAD"], Some(dir))
         .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+        .and_then(|output| parse_git_metadata_field_output(output, &mut warned));
 
     (rev, branch)
+}
+
+fn parse_git_metadata_field_output(
+    output: std::process::Output,
+    warned: &mut bool,
+) -> Option<String> {
+    if output.status.success() {
+        return String::from_utf8(output.stdout)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+    }
+
+    if !*warned {
+        if let Some(warning) = git_metadata_warning_message(&output.stderr) {
+            eprintln!("{warning}");
+            *warned = true;
+        }
+    }
+    None
+}
+
+fn git_metadata_warning_message(stderr: &[u8]) -> Option<String> {
+    let stderr = truncate_stderr(stderr);
+    if stderr.is_empty() {
+        return None;
+    }
+
+    // Heuristic: suppress expected non-repository failures, warn on everything
+    // else so users can diagnose actionable git-state issues.
+    let lowered = stderr.to_ascii_lowercase();
+    if lowered.contains("not a git repository") {
+        return None;
+    }
+
+    Some(format!("warning: git-rev/git-branch unavailable: {stderr}"))
 }
 
 fn source_annotation_for_source(
@@ -470,6 +501,27 @@ mod tests {
         assert_eq!(
             annotation,
             Some(("gh:owner/repo@main".to_string(), "github-api".to_string()))
+        );
+    }
+
+    #[test]
+    fn git_metadata_warning_suppresses_not_repo_stderr() {
+        let warning = git_metadata_warning_message(
+            b"fatal: not a git repository (or any of the parent directories): .git",
+        );
+        assert!(
+            warning.is_none(),
+            "not-a-repository stderr should not produce a warning"
+        );
+    }
+
+    #[test]
+    fn git_metadata_warning_formats_actionable_stderr() {
+        let warning = git_metadata_warning_message(b"fatal: index file corrupt")
+            .expect("actionable stderr should produce warning text");
+        assert_eq!(
+            warning,
+            "warning: git-rev/git-branch unavailable: fatal: index file corrupt"
         );
     }
 
