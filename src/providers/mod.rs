@@ -7,7 +7,7 @@ use flate2::read::GzDecoder;
 use tempfile::TempDir;
 
 use crate::error::GitClosureError;
-use crate::utils::truncate_stderr;
+use crate::utils::{ensure_no_symlink_ancestors, reject_if_symlink, truncate_stderr};
 
 type Result<T> = std::result::Result<T, GitClosureError>;
 
@@ -496,7 +496,6 @@ fn extract_github_tarball(bytes: &[u8], destination: &Path) -> Result<()> {
             let target = target.ok_or_else(|| {
                 GitClosureError::Parse("github-api: symlink entry missing target".to_string())
             })?;
-
             #[cfg(unix)]
             {
                 std::os::unix::fs::symlink(&target, &output_path)?;
@@ -523,37 +522,6 @@ fn extract_github_tarball(bytes: &[u8], destination: &Path) -> Result<()> {
         ));
     }
 
-    Ok(())
-}
-
-fn ensure_no_symlink_ancestors(root: &Path, target: &Path) -> Result<()> {
-    let relative = target.strip_prefix(root).map_err(|_| {
-        GitClosureError::UnsafePath(format!(
-            "github-api: target path escapes destination root: {}",
-            target.display()
-        ))
-    })?;
-
-    let mut current = root.to_path_buf();
-    for component in relative.components() {
-        current.push(component.as_os_str());
-        reject_if_symlink(&current)?;
-    }
-
-    Ok(())
-}
-
-fn reject_if_symlink(path: &Path) -> Result<()> {
-    if !path.exists() {
-        return Ok(());
-    }
-    let metadata = fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink() {
-        return Err(GitClosureError::UnsafePath(format!(
-            "github-api: path component is a symlink: {}",
-            path.display()
-        )));
-    }
     Ok(())
 }
 

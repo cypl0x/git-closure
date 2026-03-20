@@ -46,7 +46,7 @@ pub fn fuzz_sanitized_relative_path(path: &str) {
 
 #[doc(hidden)]
 pub fn fuzz_lexical_normalize(path: &str) {
-    let _ = materialize::lexical_normalize(std::path::Path::new(path));
+    let _ = utils::lexical_normalize(std::path::Path::new(path));
 }
 
 // ── Integration test suite ────────────────────────────────────────────────────
@@ -658,7 +658,7 @@ mod tests {
     #[test]
     fn lexical_normalize_posix_root_parent_stays_at_root() {
         let normalized =
-            crate::materialize::lexical_normalize(Path::new("/../..")).expect("normalize root");
+            crate::utils::lexical_normalize(Path::new("/../..")).expect("normalize root");
         assert_eq!(normalized, std::path::PathBuf::from("/"));
     }
 

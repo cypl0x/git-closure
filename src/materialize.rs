@@ -11,7 +11,7 @@ use crate::error::GitClosureError;
 use crate::snapshot::hash::{compute_snapshot_hash, sha256_hex};
 use crate::snapshot::serial::parse_snapshot;
 use crate::snapshot::{Result, VerifyReport};
-use crate::utils::io_error_with_path;
+use crate::utils::{io_error_with_path, lexical_normalize};
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -207,42 +207,4 @@ pub(crate) fn sanitized_relative_path(path: &str) -> Result<PathBuf> {
     }
 
     Ok(clean)
-}
-
-/// Resolves a path purely lexically (without filesystem I/O), eliminating
-/// `.` and `..` components.
-///
-/// Used for symlink-target containment checks: we must not call `canonicalize`
-/// because the symlink destination may not yet exist.  The POSIX rule that
-/// `/..` stays at `/` is respected for rooted paths.
-pub(crate) fn lexical_normalize(path: &Path) -> Result<PathBuf> {
-    let mut normalized = PathBuf::new();
-    let mut has_root = false;
-
-    for component in path.components() {
-        match component {
-            Component::Prefix(_) => {
-                return Err(GitClosureError::UnsafePath(format!(
-                    "unsupported path prefix: {}",
-                    path.display()
-                )));
-            }
-            Component::RootDir => {
-                normalized.push(Path::new("/"));
-                has_root = true;
-            }
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if !normalized.pop() && !has_root {
-                    return Err(GitClosureError::UnsafePath(format!(
-                        "path escapes lexical root: {}",
-                        path.display()
-                    )));
-                }
-            }
-            Component::Normal(part) => normalized.push(part),
-        }
-    }
-
-    Ok(normalized)
 }
