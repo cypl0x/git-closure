@@ -10,6 +10,7 @@
 //! | [`build_snapshot_from_provider`] | Build via a custom [`providers::Provider`] |
 //! | [`verify_snapshot`] | Verify snapshot integrity |
 //! | [`materialize_snapshot`] | Restore a snapshot to a directory |
+//! | [`materialize_snapshot_with_options`] | Restore with explicit policy options |
 //! | [`diff_snapshots`] | Compare two snapshots and return structured differences |
 //! | [`diff_snapshot_to_source`] | Compare a snapshot against a live source directory |
 //! | [`render_snapshot`] | Render a snapshot as Markdown, HTML, or JSON |
@@ -25,6 +26,8 @@
 //! | [`GitClosureError`] | Typed error taxonomy for build/verify/materialize operations |
 //! | [`BuildOptions`] | Build-mode toggles (`include_untracked`, `require_clean`) |
 //! | [`VerifyReport`] | Summary returned by [`verify_snapshot`] |
+//! | [`MaterializeOptions`] | Options controlling materialization behavior |
+//! | [`MaterializePolicy`] | Policy profile for materialization safety/compatibility |
 //! | [`ListEntry`] | Structured row returned by listing operations |
 //! | [`SnapshotHeader`] | Parsed `;;` metadata header block |
 //! | [`SnapshotFile`] | Parsed file/symlink record from a snapshot |
@@ -47,7 +50,10 @@ pub(crate) mod utils;
 // ── Public re-exports ─────────────────────────────────────────────────────────
 
 pub use error::GitClosureError;
-pub use materialize::{materialize_snapshot, verify_snapshot};
+pub use materialize::{
+    materialize_snapshot, materialize_snapshot_with_options, verify_snapshot, MaterializeOptions,
+    MaterializePolicy,
+};
 pub use snapshot::build::{
     build_snapshot, build_snapshot_from_provider, build_snapshot_from_source,
     build_snapshot_with_options,
@@ -1393,6 +1399,7 @@ mod tests {
             "[`build_snapshot_from_provider`]",
             "[`verify_snapshot`]",
             "[`materialize_snapshot`]",
+            "[`materialize_snapshot_with_options`]",
             "[`diff_snapshots`]",
             "[`diff_snapshot_to_source`]",
             "[`render_snapshot`]",
@@ -1409,6 +1416,8 @@ mod tests {
             "[`GitClosureError`]",
             "[`BuildOptions`]",
             "[`VerifyReport`]",
+            "[`MaterializeOptions`]",
+            "[`MaterializePolicy`]",
             "[`ListEntry`]",
             "[`SnapshotHeader`]",
             "[`SnapshotFile`]",
@@ -1588,6 +1597,53 @@ mod tests {
 
         let bytes = fs::read(output.path().join("a.txt")).expect("read materialized a.txt");
         assert_eq!(bytes, b"content\n");
+    }
+
+    #[test]
+    fn materialize_trusted_nonempty_policy_allows_existing_files() {
+        let source = TempDir::new().expect("create source tempdir");
+        fs::write(source.path().join("a.txt"), b"content\n").expect("write a.txt");
+
+        let snapshot = source.path().join("snap.gcl");
+        build_snapshot(source.path(), &snapshot).expect("build snapshot");
+
+        let output = TempDir::new().expect("create output tempdir");
+        fs::write(output.path().join("existing.txt"), b"keep\n").expect("write existing file");
+
+        crate::materialize_snapshot_with_options(
+            &snapshot,
+            output.path(),
+            &crate::MaterializeOptions {
+                policy: crate::MaterializePolicy::TrustedNonempty,
+            },
+        )
+        .expect("trusted nonempty policy should allow overlay materialization");
+
+        let bytes = fs::read(output.path().join("a.txt")).expect("read materialized file");
+        assert_eq!(bytes, b"content\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn materialize_no_symlink_policy_rejects_symlink_entries() {
+        let source = TempDir::new().expect("create source tempdir");
+        fs::write(source.path().join("target.txt"), b"payload\n").expect("write target");
+        std::os::unix::fs::symlink("target.txt", source.path().join("link"))
+            .expect("create symlink");
+
+        let snapshot = source.path().join("snap.gcl");
+        build_snapshot(source.path(), &snapshot).expect("build snapshot");
+
+        let output = TempDir::new().expect("create output tempdir");
+        let err = crate::materialize_snapshot_with_options(
+            &snapshot,
+            output.path(),
+            &crate::MaterializeOptions {
+                policy: crate::MaterializePolicy::NoSymlink,
+            },
+        )
+        .expect_err("no-symlink policy must reject symlink entries");
+        assert!(matches!(err, GitClosureError::Parse(_)));
     }
 
     #[test]

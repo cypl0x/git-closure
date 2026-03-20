@@ -17,6 +17,31 @@ use crate::utils::{
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
+/// Policy profiles for snapshot materialization.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum MaterializePolicy {
+    /// Preserve current strict behavior:
+    /// - output directory must be empty
+    /// - symlink entries are allowed (platform permitting)
+    #[default]
+    Strict,
+    /// Allow materializing into a non-empty output directory.
+    ///
+    /// Existing files may be overwritten if the snapshot contains matching
+    /// paths.
+    TrustedNonempty,
+    /// Reject snapshots that contain symlink entries.
+    ///
+    /// Useful for environments that cannot or must not create symlinks.
+    NoSymlink,
+}
+
+/// Options controlling materialization behavior.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MaterializeOptions {
+    pub policy: MaterializePolicy,
+}
+
 /// Verifies the structural and content integrity of a snapshot file.
 ///
 /// Checks performed:
@@ -105,6 +130,15 @@ pub fn verify_snapshot(snapshot: &Path) -> Result<VerifyReport> {
 /// - On non-Unix platforms, mode parsing still occurs but applying POSIX
 ///   permissions is intentionally a no-op in v0.1.
 pub fn materialize_snapshot(snapshot: &Path, output: &Path) -> Result<()> {
+    materialize_snapshot_with_options(snapshot, output, &MaterializeOptions::default())
+}
+
+/// Materializes a snapshot with explicit policy controls.
+pub fn materialize_snapshot_with_options(
+    snapshot: &Path,
+    output: &Path,
+    options: &MaterializeOptions,
+) -> Result<()> {
     let text = fs::read_to_string(snapshot).map_err(|err| io_error_with_path(err, snapshot))?;
 
     let (header, files) = parse_snapshot(&text)?;
@@ -121,18 +155,20 @@ pub fn materialize_snapshot(snapshot: &Path, output: &Path) -> Result<()> {
 
     let output_abs = fs::canonicalize(output).map_err(|err| io_error_with_path(err, output))?;
 
-    // Safety invariant: require an empty output directory.
-    // See module-level doc comment for the security rationale.
-    let is_empty = output_abs
-        .read_dir()
-        .map_err(|err| io_error_with_path(err, &output_abs))?
-        .next()
-        .is_none();
-    if !is_empty {
-        return Err(GitClosureError::Parse(format!(
-            "output directory must be empty: {}",
-            output_abs.display()
-        )));
+    if options.policy != MaterializePolicy::TrustedNonempty {
+        // Safety invariant: require an empty output directory.
+        // See module-level doc comment for the security rationale.
+        let is_empty = output_abs
+            .read_dir()
+            .map_err(|err| io_error_with_path(err, &output_abs))?
+            .next()
+            .is_none();
+        if !is_empty {
+            return Err(GitClosureError::Parse(format!(
+                "output directory must be empty: {}",
+                output_abs.display()
+            )));
+        }
     }
 
     for file in files {
@@ -149,6 +185,12 @@ pub fn materialize_snapshot(snapshot: &Path, output: &Path) -> Result<()> {
         }
 
         if let Some(target) = &file.symlink_target {
+            if options.policy == MaterializePolicy::NoSymlink {
+                return Err(GitClosureError::Parse(format!(
+                    "symlink entry is disallowed by materialize policy: {}",
+                    file.path
+                )));
+            }
             let target_path = Path::new(target);
             let effective_target = if target_path.is_absolute() {
                 target_path.to_path_buf()
