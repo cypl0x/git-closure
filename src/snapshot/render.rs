@@ -80,7 +80,7 @@ fn render_markdown(header: &SnapshotHeader, entries: &[ListEntry]) -> String {
         let sha256_display = if e.is_symlink {
             format!("→ {}", e.symlink_target.as_deref().unwrap_or(""))
         } else {
-            format!("`{}`", &e.sha256[..16])
+            format!("`{}`", sha256_prefix(&e.sha256))
         };
         out.push_str(&format!(
             "| `{}` | {} | {} | {} | {} |\n",
@@ -151,7 +151,7 @@ fn render_html(header: &SnapshotHeader, entries: &[ListEntry]) -> String {
                 html_escape(e.symlink_target.as_deref().unwrap_or(""))
             )
         } else {
-            format!("<code>{}</code>", &e.sha256[..16])
+            format!("<code>{}</code>", sha256_prefix(&e.sha256))
         };
         out.push_str(&format!(
             "<tr><td><code>{}</code></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>\n",
@@ -205,6 +205,10 @@ fn render_json(header: &SnapshotHeader, entries: &[ListEntry]) -> String {
 fn count_entry_types(entries: &[ListEntry]) -> (usize, usize) {
     let symlinks = entries.iter().filter(|e| e.is_symlink).count();
     (entries.len() - symlinks, symlinks)
+}
+
+fn sha256_prefix(sha256: &str) -> &str {
+    &sha256[..sha256.len().min(16)]
 }
 
 fn html_escape(s: &str) -> String {
@@ -397,6 +401,15 @@ mod tests {
         let json_a = render_snapshot(&snap, RenderFormat::Json).unwrap();
         let json_b = render_snapshot(&snap, RenderFormat::Json).unwrap();
         assert_eq!(json_a, json_b, "json output must be deterministic");
+    }
+
+    #[test]
+    fn sha256_prefix_handles_short_and_long_values() {
+        assert_eq!(super::sha256_prefix("abc"), "abc");
+        assert_eq!(
+            super::sha256_prefix("0123456789abcdefdeadbeef"),
+            "0123456789abcdef"
+        );
     }
 
     #[test]

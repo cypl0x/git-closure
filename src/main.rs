@@ -369,6 +369,10 @@ fn print_diff_stat(entries: &[DiffEntry]) {
     println!("total:        {total}");
 }
 
+fn sha256_prefix(sha256: &str) -> &str {
+    &sha256[..sha256.len().min(16)]
+}
+
 fn print_list(entries: &[ListEntry], json: bool, long: bool) {
     if json {
         println!("{}", list_entries_json(entries, long));
@@ -378,7 +382,7 @@ fn print_list(entries: &[ListEntry], json: bool, long: bool) {
             let detail = if e.is_symlink {
                 format!("-> {}", e.symlink_target.as_deref().unwrap_or(""))
             } else {
-                format!("{}  {}  {}", e.mode, e.size, &e.sha256[..16])
+                format!("{}  {}  {}", e.mode, e.size, sha256_prefix(&e.sha256))
             };
             println!("{}\t{}\t{}", e.path, entry_type, detail);
         }
@@ -725,6 +729,15 @@ mod tests {
         assert_eq!(
             long_value[1]["symlink_target"],
             Value::String("a.txt".to_string())
+        );
+    }
+
+    #[test]
+    fn sha256_prefix_handles_short_and_long_values() {
+        assert_eq!(super::sha256_prefix("abc"), "abc");
+        assert_eq!(
+            super::sha256_prefix("0123456789abcdefdeadbeef"),
+            "0123456789abcdef"
         );
     }
 

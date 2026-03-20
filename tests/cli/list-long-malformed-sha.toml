@@ -1,0 +1,3 @@
+bin.name = "git-closure"
+args = ["list", "bad.gcl", "--long"]
+status.code = 4

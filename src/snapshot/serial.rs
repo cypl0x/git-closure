@@ -390,6 +390,11 @@ fn parse_files_value(
         }
 
         let sha256 = sha256.ok_or_else(|| GitClosureError::Parse("missing :sha256".to_string()))?;
+        if !is_valid_sha256_field(&sha256) {
+            return Err(GitClosureError::Parse(format!(
+                "invalid :sha256 value for {path}: expected 64 lowercase hex digits, got {sha256:?}"
+            )));
+        }
         let mode = mode.ok_or_else(|| GitClosureError::Parse("missing :mode".to_string()))?;
         let size = size.ok_or_else(|| GitClosureError::Parse("missing :size".to_string()))?;
 
@@ -452,6 +457,13 @@ fn parse_files_value(
         }
     }
     Ok(files)
+}
+
+fn is_valid_sha256_field(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 // ── Public high-level operations ─────────────────────────────────────────────
@@ -875,6 +887,69 @@ mod tests {
         let err =
             parse_snapshot(&modified).expect_err("symlink entries must reject non-zero size field");
         assert!(matches!(err, GitClosureError::Parse(_)));
+    }
+
+    #[test]
+    fn parse_snapshot_rejects_short_sha256() {
+        let content = "x";
+        let invalid_sha = "a".repeat(63);
+        let snapshot_hash = crate::snapshot::hash::sha256_hex(b"placeholder");
+        let input = format!(
+            ";; git-closure snapshot v0.1\n;; snapshot-hash: {snapshot_hash}\n;; file-count: 1\n\n(\n  ((:path \"short.txt\" :sha256 \"{invalid_sha}\" :mode \"644\" :size 1) \"{content}\")\n)\n"
+        );
+
+        let err = parse_snapshot(&input).expect_err("short :sha256 must be rejected");
+        match err {
+            GitClosureError::Parse(message) => {
+                assert!(
+                    message.contains("short.txt") && message.contains(&invalid_sha),
+                    "parse error should include path and invalid value, got: {message}"
+                );
+            }
+            other => panic!("expected Parse error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_snapshot_rejects_non_hex_sha256() {
+        let content = "x";
+        let invalid_sha = "not-a-hash";
+        let snapshot_hash = crate::snapshot::hash::sha256_hex(b"placeholder");
+        let input = format!(
+            ";; git-closure snapshot v0.1\n;; snapshot-hash: {snapshot_hash}\n;; file-count: 1\n\n(\n  ((:path \"nonhex.txt\" :sha256 \"{invalid_sha}\" :mode \"644\" :size 1) \"{content}\")\n)\n"
+        );
+
+        let err = parse_snapshot(&input).expect_err("non-hex :sha256 must be rejected");
+        match err {
+            GitClosureError::Parse(message) => {
+                assert!(
+                    message.contains("nonhex.txt") && message.contains(invalid_sha),
+                    "parse error should include path and invalid value, got: {message}"
+                );
+            }
+            other => panic!("expected Parse error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_snapshot_rejects_uppercase_sha256() {
+        let content = "x";
+        let invalid_sha = "A".repeat(64);
+        let snapshot_hash = crate::snapshot::hash::sha256_hex(b"placeholder");
+        let input = format!(
+            ";; git-closure snapshot v0.1\n;; snapshot-hash: {snapshot_hash}\n;; file-count: 1\n\n(\n  ((:path \"upper.txt\" :sha256 \"{invalid_sha}\" :mode \"644\" :size 1) \"{content}\")\n)\n"
+        );
+
+        let err = parse_snapshot(&input).expect_err("uppercase :sha256 must be rejected");
+        match err {
+            GitClosureError::Parse(message) => {
+                assert!(
+                    message.contains("upper.txt") && message.contains(&invalid_sha),
+                    "parse error should include path and invalid value, got: {message}"
+                );
+            }
+            other => panic!("expected Parse error, got {other:?}"),
+        }
     }
 
     #[test]

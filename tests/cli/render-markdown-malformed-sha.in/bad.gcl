@@ -1,0 +1,7 @@
+;; git-closure snapshot v0.1
+;; snapshot-hash: 0000000000000000000000000000000000000000000000000000000000000000
+;; file-count: 1
+
+(
+  ((:path "broken.txt" :sha256 "not-a-hash" :mode "644" :size 1) "x")
+)
