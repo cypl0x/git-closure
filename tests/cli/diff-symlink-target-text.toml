@@ -1,0 +1,3 @@
+bin.name = "git-closure"
+args = ["diff", "left.gcl", "right.gcl"]
+status.code = 1

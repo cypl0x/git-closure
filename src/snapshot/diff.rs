@@ -33,6 +33,12 @@ pub enum DiffEntry {
         old_mode: String,
         new_mode: String,
     },
+    /// Symlink exists in both snapshots but points to a different target.
+    SymlinkTargetChanged {
+        path: String,
+        old_target: String,
+        new_target: String,
+    },
 }
 
 /// Result of comparing two snapshots.
@@ -62,7 +68,7 @@ pub struct DiffResult {
 ///
 /// Symlinks are compared by target string, not sha256 (which is empty for
 /// symlinks).  Two symlinks with the same target pointing to the same path
-/// are considered identical; different targets are `Modified`.
+/// are considered identical; different targets are `SymlinkTargetChanged`.
 pub fn diff_snapshots(left: &Path, right: &Path) -> Result<DiffResult> {
     let left_text = fs::read_to_string(left).map_err(|err| io_error_with_path(err, left))?;
     let right_text = fs::read_to_string(right).map_err(|err| io_error_with_path(err, right))?;
@@ -115,11 +121,21 @@ fn compute_diff(left: &[SnapshotFile], right: &[SnapshotFile]) -> DiffResult {
                 }
 
                 if content_key(lf) != content_key(rf) {
-                    modified.push(DiffEntry::Modified {
-                        path: lf.path.clone(),
-                        old_sha256: lf.sha256.clone(),
-                        new_sha256: rf.sha256.clone(),
-                    });
+                    if let (Some(old_target), Some(new_target)) =
+                        (&lf.symlink_target, &rf.symlink_target)
+                    {
+                        modified.push(DiffEntry::SymlinkTargetChanged {
+                            path: lf.path.clone(),
+                            old_target: old_target.clone(),
+                            new_target: new_target.clone(),
+                        });
+                    } else {
+                        modified.push(DiffEntry::Modified {
+                            path: lf.path.clone(),
+                            old_sha256: lf.sha256.clone(),
+                            new_sha256: rf.sha256.clone(),
+                        });
+                    }
                 } else if lf.mode != rf.mode {
                     mode_changed.push(DiffEntry::ModeChanged {
                         path: lf.path.clone(),
@@ -236,15 +252,15 @@ fn compute_diff(left: &[SnapshotFile], right: &[SnapshotFile]) -> DiffResult {
     });
 
     modified.sort_by(|a, b| {
-        let ap = if let DiffEntry::Modified { path, .. } = a {
-            path
-        } else {
-            unreachable!()
+        let ap = match a {
+            DiffEntry::Modified { path, .. } => path,
+            DiffEntry::SymlinkTargetChanged { path, .. } => path,
+            _ => unreachable!(),
         };
-        let bp = if let DiffEntry::Modified { path, .. } = b {
-            path
-        } else {
-            unreachable!()
+        let bp = match b {
+            DiffEntry::Modified { path, .. } => path,
+            DiffEntry::SymlinkTargetChanged { path, .. } => path,
+            _ => unreachable!(),
         };
         ap.cmp(bp)
     });
@@ -413,17 +429,25 @@ mod tests {
     }
 
     #[test]
-    fn diff_symlink_target_change_is_modified() {
+    fn diff_symlink_target_change_uses_dedicated_variant() {
         let dir = TempDir::new().unwrap();
         let left_files = vec![symlink_file("link", "target_a.txt")];
         let right_files = vec![symlink_file("link", "target_b.txt")];
         let left = write_snap(&dir, "left.gcl", &left_files);
         let right = write_snap(&dir, "right.gcl", &right_files);
         let result = diff_snapshots(&left, &right).unwrap();
-        assert!(result
-            .entries
-            .iter()
-            .any(|entry| matches!(entry, DiffEntry::Modified { path, .. } if path == "link")));
+        assert!(result.entries.contains(&DiffEntry::SymlinkTargetChanged {
+            path: "link".to_string(),
+            old_target: "target_a.txt".to_string(),
+            new_target: "target_b.txt".to_string(),
+        }));
+        assert!(
+            !result
+                .entries
+                .iter()
+                .any(|entry| matches!(entry, DiffEntry::Modified { path, .. } if path == "link")),
+            "symlink-vs-symlink changes must not emit Modified"
+        );
     }
 
     #[test]

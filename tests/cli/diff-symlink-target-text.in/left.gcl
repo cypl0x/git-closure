@@ -1,0 +1,7 @@
+;; git-closure snapshot v0.1
+;; snapshot-hash: 1111111111111111111111111111111111111111111111111111111111111111
+;; file-count: 1
+
+(
+  ((:path "link" :type "symlink" :target "target_a.txt") "")
+)

@@ -301,6 +301,13 @@ fn print_diff(entries: &[DiffEntry], json: bool) {
                 } => {
                     println!("T\t{path}\t{old_mode}->{new_mode}")
                 }
+                DiffEntry::SymlinkTargetChanged {
+                    path,
+                    old_target,
+                    new_target,
+                } => {
+                    println!("S\t{path}\t{old_target}\t->\t{new_target}")
+                }
                 _ => {}
             }
         }
@@ -312,6 +319,7 @@ fn print_diff_stat(entries: &[DiffEntry]) {
     let mut removed = 0usize;
     let mut modified = 0usize;
     let mut mode_changed = 0usize;
+    let mut symlink_changed = 0usize;
     let mut renamed = 0usize;
 
     for entry in entries {
@@ -320,16 +328,18 @@ fn print_diff_stat(entries: &[DiffEntry]) {
             DiffEntry::Removed { .. } => removed += 1,
             DiffEntry::Modified { .. } => modified += 1,
             DiffEntry::ModeChanged { .. } => mode_changed += 1,
+            DiffEntry::SymlinkTargetChanged { .. } => symlink_changed += 1,
             DiffEntry::Renamed { .. } => renamed += 1,
             _ => {}
         }
     }
 
-    let total = added + removed + modified + mode_changed + renamed;
+    let total = added + removed + modified + mode_changed + symlink_changed + renamed;
     println!("added:        {added}");
     println!("removed:      {removed}");
     println!("modified:     {modified}");
     println!("mode_changed: {mode_changed}");
+    println!("symlink_changed: {symlink_changed}");
     println!("renamed:      {renamed}");
     println!("total:        {total}");
 }
@@ -377,6 +387,11 @@ enum DiffJsonEntry {
         old_mode: String,
         new_mode: String,
     },
+    SymlinkTargetChanged {
+        path: String,
+        old_target: String,
+        new_target: String,
+    },
 }
 
 fn diff_entries_json(entries: &[DiffEntry]) -> String {
@@ -406,6 +421,15 @@ fn diff_entries_json(entries: &[DiffEntry]) -> String {
                 path: path.clone(),
                 old_mode: old_mode.clone(),
                 new_mode: new_mode.clone(),
+            }),
+            DiffEntry::SymlinkTargetChanged {
+                path,
+                old_target,
+                new_target,
+            } => Some(DiffJsonEntry::SymlinkTargetChanged {
+                path: path.clone(),
+                old_target: old_target.clone(),
+                new_target: new_target.clone(),
             }),
             _ => None,
         })
@@ -593,6 +617,25 @@ mod tests {
         assert_eq!(arr[0]["type"], Value::String("modified".to_string()));
         assert_eq!(arr[0]["path"], Value::String("a.txt".to_string()));
         assert_eq!(arr[1]["type"], Value::String("mode_changed".to_string()));
+    }
+
+    #[test]
+    fn diff_entries_json_includes_symlink_target_changed() {
+        let entries = vec![DiffEntry::SymlinkTargetChanged {
+            path: "link".to_string(),
+            old_target: "a".to_string(),
+            new_target: "b".to_string(),
+        }];
+
+        let json = diff_entries_json(&entries);
+        let value: Value = serde_json::from_str(&json).expect("diff JSON must parse");
+        let arr = value.as_array().expect("diff JSON must be an array");
+        assert_eq!(
+            arr[0]["type"],
+            Value::String("symlink_target_changed".to_string())
+        );
+        assert_eq!(arr[0]["old_target"], Value::String("a".to_string()));
+        assert_eq!(arr[0]["new_target"], Value::String("b".to_string()));
     }
 
     #[test]
