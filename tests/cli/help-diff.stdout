@@ -4,7 +4,7 @@ Usage: git-closure diff [OPTIONS] <LEFT> <RIGHT>
 
 Arguments:
   <LEFT>   Left (old) snapshot
-  <RIGHT>  Right (new) snapshot
+  <RIGHT>  Right (new) snapshot file, or a directory to compare against the live source tree
 
 Options:
       --json  Output JSON

@@ -161,6 +161,16 @@ The right-hand diff input is auto-detected:
 - existing directory path -> compare snapshot against live source tree
 - otherwise -> compare snapshot file vs snapshot file
 
+Examples:
+
+```bash
+# snapshot vs snapshot
+git-closure diff old.gcl new.gcl
+
+# snapshot vs live source tree
+git-closure diff old.gcl ./src
+```
+
 `diff` exit behavior:
 
 - exit `0` when identical

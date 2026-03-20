@@ -69,7 +69,9 @@ enum Commands {
     Diff {
         #[arg(help = "Left (old) snapshot")]
         left: PathBuf,
-        #[arg(help = "Right (new) snapshot")]
+        #[arg(
+            help = "Right (new) snapshot file, or a directory to compare against the live source tree"
+        )]
         right: PathBuf,
         #[arg(long, help = "Output JSON", conflicts_with = "stat")]
         json: bool,
