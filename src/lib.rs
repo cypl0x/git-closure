@@ -11,6 +11,7 @@
 //! | [`verify_snapshot`] | Verify snapshot integrity |
 //! | [`materialize_snapshot`] | Restore a snapshot to a directory |
 //! | [`diff_snapshots`] | Compare two snapshots and return structured differences |
+//! | [`diff_snapshot_to_source`] | Compare a snapshot against a live source directory |
 //! | [`render_snapshot`] | Render a snapshot as Markdown, HTML, or JSON |
 //! | [`fmt_snapshot`] | Canonicalize snapshot formatting |
 //! | [`fmt_snapshot_with_options`] | Canonicalize formatting with explicit options |
@@ -49,7 +50,7 @@ pub use snapshot::build::{
     build_snapshot, build_snapshot_from_provider, build_snapshot_from_source,
     build_snapshot_with_options,
 };
-pub use snapshot::diff::{diff_snapshots, DiffEntry, DiffResult};
+pub use snapshot::diff::{diff_snapshot_to_source, diff_snapshots, DiffEntry, DiffResult};
 pub use snapshot::render::{render_snapshot, RenderFormat};
 pub use snapshot::serial::{
     fmt_snapshot, fmt_snapshot_with_options, list_snapshot, list_snapshot_str, parse_snapshot,
@@ -1359,6 +1360,7 @@ mod tests {
             "[`verify_snapshot`]",
             "[`materialize_snapshot`]",
             "[`diff_snapshots`]",
+            "[`diff_snapshot_to_source`]",
             "[`render_snapshot`]",
             "[`fmt_snapshot`]",
             "[`fmt_snapshot_with_options`]",

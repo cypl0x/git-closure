@@ -96,7 +96,7 @@ pub fn build_snapshot_with_options(
 
 // ── File collection ───────────────────────────────────────────────────────────
 
-fn collect_files(root: &Path, options: &BuildOptions) -> Result<Vec<SnapshotFile>> {
+pub(crate) fn collect_files(root: &Path, options: &BuildOptions) -> Result<Vec<SnapshotFile>> {
     if let Some(repo_context) = GitRepoContext::discover(root)? {
         return collect_files_from_git_repo(&repo_context, options);
     }

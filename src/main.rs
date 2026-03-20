@@ -6,9 +6,9 @@ use clap_complete::{generate, shells};
 use serde::Serialize;
 
 use git_closure::{
-    build_snapshot_from_source, diff_snapshots, fmt_snapshot_with_options, list_snapshot,
-    materialize_snapshot, providers::ProviderKind, render_snapshot, verify_snapshot, BuildOptions,
-    DiffEntry, FmtOptions, GitClosureError, ListEntry, RenderFormat,
+    build_snapshot_from_source, diff_snapshot_to_source, diff_snapshots, fmt_snapshot_with_options,
+    list_snapshot, materialize_snapshot, providers::ProviderKind, render_snapshot, verify_snapshot,
+    BuildOptions, DiffEntry, FmtOptions, GitClosureError, ListEntry, RenderFormat,
 };
 
 #[derive(Parser, Debug)]
@@ -204,7 +204,11 @@ fn run() -> Result<(), GitClosureError> {
             json,
             stat,
         } => {
-            let result = diff_snapshots(&left, &right)?;
+            let result = if should_diff_against_source(&right) {
+                diff_snapshot_to_source(&left, &right, &BuildOptions::default())?
+            } else {
+                diff_snapshots(&left, &right)?
+            };
             if stat {
                 print_diff_stat(&result.entries);
             } else {
@@ -272,6 +276,10 @@ fn run() -> Result<(), GitClosureError> {
     }
 
     Ok(())
+}
+
+fn should_diff_against_source(right: &Path) -> bool {
+    right.is_dir()
 }
 
 // ── Output helpers ────────────────────────────────────────────────────────────
@@ -539,6 +547,7 @@ mod tests {
     use serde_json::Value;
     use std::path::PathBuf;
     use std::sync::Mutex;
+    use tempfile::TempDir;
 
     static CWD_LOCK: Mutex<()> = Mutex::new(());
 
@@ -672,5 +681,19 @@ mod tests {
             long_value[1]["symlink_target"],
             Value::String("a.txt".to_string())
         );
+    }
+
+    #[test]
+    fn should_diff_against_source_true_for_directory() {
+        let dir = TempDir::new().expect("create temp dir");
+        assert!(super::should_diff_against_source(dir.path()));
+    }
+
+    #[test]
+    fn should_diff_against_source_false_for_snapshot_file() {
+        let dir = TempDir::new().expect("create temp dir");
+        let file = dir.path().join("snap.gcl");
+        std::fs::write(&file, "").expect("create file");
+        assert!(!super::should_diff_against_source(&file));
     }
 }

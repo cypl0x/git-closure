@@ -5,8 +5,9 @@ use std::path::Path;
 
 use crate::utils::io_error_with_path;
 
+use super::build::collect_files;
 use super::serial::parse_snapshot;
-use super::{Result, SnapshotFile};
+use super::{BuildOptions, Result, SnapshotFile};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -76,6 +77,32 @@ pub fn diff_snapshots(left: &Path, right: &Path) -> Result<DiffResult> {
     let (_, left_files) = parse_snapshot(&left_text)?;
     let (_, right_files) = parse_snapshot(&right_text)?;
 
+    Ok(compute_diff(&left_files, &right_files))
+}
+
+/// Compares a snapshot file against a live source directory.
+///
+/// This parses the left `.gcl` snapshot and collects the right-hand entries
+/// directly from `source` using the same build-time file selection rules.
+pub fn diff_snapshot_to_source(
+    snapshot: &Path,
+    source: &Path,
+    options: &BuildOptions,
+) -> Result<DiffResult> {
+    let snapshot_text =
+        fs::read_to_string(snapshot).map_err(|err| io_error_with_path(err, snapshot))?;
+    let (_header, left_files) = parse_snapshot(&snapshot_text)?;
+
+    let source = fs::canonicalize(source).map_err(|err| io_error_with_path(err, source))?;
+    if !source.is_dir() {
+        return Err(crate::error::GitClosureError::Parse(format!(
+            "source is not a directory: {}",
+            source.display()
+        )));
+    }
+
+    let mut right_files = collect_files(&source, options)?;
+    right_files.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(compute_diff(&left_files, &right_files))
 }
 
@@ -545,5 +572,69 @@ mod tests {
             }),
             "type change should include Added"
         );
+    }
+
+    #[test]
+    fn diff_snapshot_to_source_identical_tree_is_identical() {
+        let source = TempDir::new().unwrap();
+        let snapshots = TempDir::new().unwrap();
+        fs::write(source.path().join("a.txt"), b"alpha\n").unwrap();
+
+        let snapshot = snapshots.path().join("snap.gcl");
+        crate::snapshot::build::build_snapshot(source.path(), &snapshot).unwrap();
+
+        let result = diff_snapshot_to_source(
+            &snapshot,
+            source.path(),
+            &crate::snapshot::BuildOptions::default(),
+        )
+        .unwrap();
+        assert!(result.identical);
+        assert!(result.entries.is_empty());
+    }
+
+    #[test]
+    fn diff_snapshot_to_source_detects_modified_file() {
+        let source = TempDir::new().unwrap();
+        let snapshots = TempDir::new().unwrap();
+        fs::write(source.path().join("a.txt"), b"alpha\n").unwrap();
+
+        let snapshot = snapshots.path().join("snap.gcl");
+        crate::snapshot::build::build_snapshot(source.path(), &snapshot).unwrap();
+
+        fs::write(source.path().join("a.txt"), b"beta\n").unwrap();
+
+        let result = diff_snapshot_to_source(
+            &snapshot,
+            source.path(),
+            &crate::snapshot::BuildOptions::default(),
+        )
+        .unwrap();
+        assert!(result
+            .entries
+            .iter()
+            .any(|entry| matches!(entry, DiffEntry::Modified { path, .. } if path == "a.txt")));
+    }
+
+    #[test]
+    fn diff_snapshot_to_source_detects_added_file() {
+        let source = TempDir::new().unwrap();
+        let snapshots = TempDir::new().unwrap();
+        fs::write(source.path().join("a.txt"), b"alpha\n").unwrap();
+
+        let snapshot = snapshots.path().join("snap.gcl");
+        crate::snapshot::build::build_snapshot(source.path(), &snapshot).unwrap();
+
+        fs::write(source.path().join("b.txt"), b"new\n").unwrap();
+
+        let result = diff_snapshot_to_source(
+            &snapshot,
+            source.path(),
+            &crate::snapshot::BuildOptions::default(),
+        )
+        .unwrap();
+        assert!(result.entries.contains(&DiffEntry::Added {
+            path: "b.txt".to_string(),
+        }));
     }
 }
