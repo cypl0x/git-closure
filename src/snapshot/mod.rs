@@ -18,30 +18,30 @@ pub(crate) type Result<T> = std::result::Result<T, GitClosureError>;
 /// - `encoding == Some("base64")` ⟺ `content` contains non-UTF-8 bytes
 /// - `content.len() as u64 == size` for all regular files
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SnapshotFile {
-    pub(crate) path: String,
-    pub(crate) sha256: String,
-    pub(crate) mode: String,
-    pub(crate) size: u64,
-    pub(crate) encoding: Option<String>,
-    pub(crate) symlink_target: Option<String>,
-    pub(crate) content: Vec<u8>,
+pub struct SnapshotFile {
+    pub path: String,
+    pub sha256: String,
+    pub mode: String,
+    pub size: u64,
+    pub encoding: Option<String>,
+    pub symlink_target: Option<String>,
+    pub content: Vec<u8>,
 }
 
 /// Parsed representation of the `;;`-comment header block at the top of a
 /// `.gcl` file.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub(crate) struct SnapshotHeader {
-    pub(crate) snapshot_hash: String,
-    pub(crate) file_count: usize,
+pub struct SnapshotHeader {
+    pub snapshot_hash: String,
+    pub file_count: usize,
     /// SHA-1 / SHA-256 revision captured from the source git repository at
     /// build time.  Informational only — not included in `snapshot_hash`.
-    pub(crate) git_rev: Option<String>,
+    pub git_rev: Option<String>,
     /// Short branch name captured from the source git repository at build time.
     /// Informational only — not included in `snapshot_hash`.
-    pub(crate) git_branch: Option<String>,
+    pub git_branch: Option<String>,
     /// Unknown `;; key: value` comments preserved for forward compatibility.
-    pub(crate) extra_headers: Vec<(String, String)>,
+    pub extra_headers: Vec<(String, String)>,
 }
 
 /// Options that influence which files are included in a snapshot build.

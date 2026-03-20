@@ -31,8 +31,11 @@ pub use snapshot::build::{
 };
 pub use snapshot::diff::{diff_snapshots, DiffEntry, DiffResult};
 pub use snapshot::render::{render_snapshot, RenderFormat};
-pub use snapshot::serial::{fmt_snapshot, fmt_snapshot_with_options, list_snapshot, FmtOptions};
-pub use snapshot::{BuildOptions, ListEntry, VerifyReport};
+pub use snapshot::serial::{
+    fmt_snapshot, fmt_snapshot_with_options, list_snapshot, list_snapshot_str, parse_snapshot,
+    FmtOptions,
+};
+pub use snapshot::{BuildOptions, ListEntry, SnapshotFile, SnapshotHeader, VerifyReport};
 
 #[doc(hidden)]
 pub fn fuzz_parse_snapshot(input: &str) {

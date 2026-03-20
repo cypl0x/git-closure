@@ -110,7 +110,7 @@ pub struct ParseLimits {
     pub max_total_bytes: Option<u64>,
 }
 
-pub(crate) fn parse_snapshot(input: &str) -> Result<(SnapshotHeader, Vec<SnapshotFile>)> {
+pub fn parse_snapshot(input: &str) -> Result<(SnapshotHeader, Vec<SnapshotFile>)> {
     parse_snapshot_with_limits(input, None)
 }
 
@@ -460,7 +460,11 @@ fn parse_files_value(
 /// file, in lexicographic path order.
 pub fn list_snapshot(snapshot: &Path) -> Result<Vec<ListEntry>> {
     let text = fs::read_to_string(snapshot).map_err(|err| io_error_with_path(err, snapshot))?;
-    let (_header, files) = parse_snapshot(&text)?;
+    list_snapshot_str(&text)
+}
+
+pub fn list_snapshot_str(text: &str) -> Result<Vec<ListEntry>> {
+    let (_header, files) = parse_snapshot(text)?;
     Ok(files
         .into_iter()
         .map(|f| ListEntry {
@@ -943,6 +947,21 @@ mod tests {
 
         // Suppress unused import warning in non-unix builds.
         let _ = sha256_hex;
+    }
+
+    #[test]
+    fn list_snapshot_str_returns_expected_entries() {
+        let files = vec![make_text_file("a.txt", "a"), make_text_file("b.txt", "bb")];
+        let header = make_header(&files);
+        let text = serialize_snapshot(&files, &header);
+
+        let entries =
+            list_snapshot_str(&text).expect("list_snapshot_str should parse valid snapshot");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].path, "a.txt");
+        assert_eq!(entries[1].path, "b.txt");
+        assert_eq!(entries[0].size, 1);
+        assert_eq!(entries[1].size, 2);
     }
 
     // ── fmt_snapshot tests ────────────────────────────────────────────────────
