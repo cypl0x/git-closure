@@ -10,6 +10,26 @@
 //! | [`build_snapshot_from_provider`] | Build via a custom [`providers::Provider`] |
 //! | [`verify_snapshot`] | Verify snapshot integrity |
 //! | [`materialize_snapshot`] | Restore a snapshot to a directory |
+//! | [`diff_snapshots`] | Compare two snapshots and return structured differences |
+//! | [`render_snapshot`] | Render a snapshot as Markdown, HTML, or JSON |
+//! | [`fmt_snapshot`] | Canonicalize snapshot formatting |
+//! | [`fmt_snapshot_with_options`] | Canonicalize formatting with explicit options |
+//! | [`list_snapshot`] | List snapshot entries from a file path |
+//! | [`list_snapshot_str`] | List snapshot entries from in-memory text |
+//! | [`parse_snapshot`] | Parse in-memory snapshot text into header + entries |
+//!
+//! | Type | Description |
+//! |---|---|
+//! | [`GitClosureError`] | Typed error taxonomy for build/verify/materialize operations |
+//! | [`BuildOptions`] | Build-mode toggles (`include_untracked`, `require_clean`) |
+//! | [`VerifyReport`] | Summary returned by [`verify_snapshot`] |
+//! | [`ListEntry`] | Structured row returned by listing operations |
+//! | [`SnapshotHeader`] | Parsed `;;` metadata header block |
+//! | [`SnapshotFile`] | Parsed file/symlink record from a snapshot |
+//! | [`DiffEntry`] | One change record emitted by [`diff_snapshots`] |
+//! | [`DiffResult`] | Deterministic diff output container |
+//! | [`RenderFormat`] | Output selector for [`render_snapshot`] |
+//! | [`FmtOptions`] | Formatting behavior options |
 
 // ── Module declarations ───────────────────────────────────────────────────────
 
@@ -1321,6 +1341,46 @@ mod tests {
         let sample = "line1\nline2\u{0000}\u{fffd}\u{1f642}\\\"";
         let expected = lexpr::to_string(&lexpr::Value::string(sample)).expect("print with lexpr");
         assert_eq!(crate::snapshot::serial::quote_string(sample), expected);
+    }
+
+    #[test]
+    fn crate_api_table_lists_public_exports() {
+        let source = include_str!("lib.rs");
+        let crate_docs = source
+            .lines()
+            .take_while(|line| line.starts_with("//!") || line.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        for symbol in [
+            "[`build_snapshot`]",
+            "[`build_snapshot_with_options`]",
+            "[`build_snapshot_from_source`]",
+            "[`build_snapshot_from_provider`]",
+            "[`verify_snapshot`]",
+            "[`materialize_snapshot`]",
+            "[`diff_snapshots`]",
+            "[`render_snapshot`]",
+            "[`fmt_snapshot`]",
+            "[`fmt_snapshot_with_options`]",
+            "[`list_snapshot`]",
+            "[`DiffEntry`]",
+            "[`DiffResult`]",
+            "[`RenderFormat`]",
+            "[`FmtOptions`]",
+            "[`parse_snapshot`]",
+            "[`list_snapshot_str`]",
+            "[`GitClosureError`]",
+            "[`BuildOptions`]",
+            "[`VerifyReport`]",
+            "[`ListEntry`]",
+            "[`SnapshotHeader`]",
+            "[`SnapshotFile`]",
+        ] {
+            assert!(
+                crate_docs.contains(symbol),
+                "crate-level Public API table should include {symbol}"
+            );
+        }
     }
 
     #[test]

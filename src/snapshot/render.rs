@@ -14,8 +14,11 @@ use super::{ListEntry, Result, SnapshotHeader};
 /// Output format for [`render_snapshot`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RenderFormat {
+    /// Render as a Markdown report.
     Markdown,
+    /// Render as a standalone HTML page.
     Html,
+    /// Render as pretty-printed JSON.
     Json,
 }
 

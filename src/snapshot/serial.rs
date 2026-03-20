@@ -463,6 +463,7 @@ pub fn list_snapshot(snapshot: &Path) -> Result<Vec<ListEntry>> {
     list_snapshot_str(&text)
 }
 
+/// Parses snapshot text and returns a `ListEntry` for each recorded file.
 pub fn list_snapshot_str(text: &str) -> Result<Vec<ListEntry>> {
     let (_header, files) = parse_snapshot(text)?;
     Ok(files
@@ -478,21 +479,24 @@ pub fn list_snapshot_str(text: &str) -> Result<Vec<ListEntry>> {
         .collect())
 }
 
-/// Reads a `.gcl` snapshot file and returns its canonical serialized form.
-///
-/// The result is byte-identical to what [`crate::build_snapshot`] would
-/// produce for the same content — modulo the structural hash which is
-/// recomputed from the parsed file list.  Use `--check` mode in the `fmt`
-/// subcommand to detect snapshots that are not yet in canonical form.
+/// Formatting behavior toggles for [`fmt_snapshot_with_options`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FmtOptions {
+    /// Recompute and overwrite a mismatched header `snapshot-hash`.
     pub repair_hash: bool,
 }
 
+/// Reads and canonicalizes a snapshot file using default [`FmtOptions`].
+///
+/// The result is byte-identical to what [`crate::build_snapshot`] would
+/// produce for the same content — modulo the structural hash which is
+/// recomputed from the parsed file list. Use `--check` mode in the `fmt`
+/// subcommand to detect snapshots that are not yet in canonical form.
 pub fn fmt_snapshot(snapshot: &Path) -> Result<String> {
     fmt_snapshot_with_options(snapshot, FmtOptions::default())
 }
 
+/// Reads and canonicalizes a snapshot file with explicit formatting options.
 pub fn fmt_snapshot_with_options(snapshot: &Path, options: FmtOptions) -> Result<String> {
     let text = fs::read_to_string(snapshot).map_err(|err| io_error_with_path(err, snapshot))?;
     let (mut header, mut files) = parse_snapshot(&text)?;
