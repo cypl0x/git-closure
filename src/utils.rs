@@ -26,6 +26,12 @@ pub(crate) fn truncate_stderr(bytes: &[u8]) -> String {
     format!("{}...", &trimmed[..end])
 }
 
+/// Rejects any existing symlink along `target`'s ancestor chain under `root`.
+///
+/// This is a best-effort metadata check. The filesystem may change between
+/// this check and the subsequent create/write operation (TOCTOU window), so
+/// callers should pair it with stronger contextual guarantees (for example,
+/// exclusive access to the output directory).
 pub(crate) fn ensure_no_symlink_ancestors(
     root: &Path,
     target: &Path,

@@ -31,6 +31,10 @@ pub enum MaterializePolicy {
     ///
     /// Existing files may be overwritten if the snapshot contains matching
     /// paths.
+    ///
+    /// This weakens the single-process safety properties provided by the
+    /// strict empty-directory precondition. On shared/network filesystems,
+    /// callers should ensure exclusive access to the output directory.
     TrustedNonempty,
     /// Reject snapshots that contain symlink entries.
     ///
@@ -184,6 +188,12 @@ pub fn materialize_snapshot(snapshot: &Path, output: &Path) -> Result<()> {
 }
 
 /// Materializes a snapshot with explicit policy controls.
+///
+/// Under [`MaterializePolicy::Strict`], requiring an empty output directory is
+/// the primary defense against symlink-race (TOCTOU) attacks in the write path.
+/// [`MaterializePolicy::TrustedNonempty`] relaxes that invariant and assumes the
+/// caller provides equivalent external guarantees (for example, exclusive
+/// directory ownership).
 pub fn materialize_snapshot_with_options(
     snapshot: &Path,
     output: &Path,
