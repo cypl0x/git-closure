@@ -202,7 +202,9 @@ pub(crate) fn is_within_prefix(path: &Path, prefix: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::path::PathBuf;
+    use std::process::Command;
 
     #[test]
     fn is_within_prefix_empty_prefix_matches_everything() {
@@ -311,5 +313,82 @@ mod tests {
             }
             other => panic!("expected CommandExitFailure, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn discover_returns_none_outside_git_repo() {
+        let temp = tempfile::TempDir::new().expect("create tempdir");
+        let discovered = GitRepoContext::discover(temp.path()).expect("discover should not error");
+        assert!(discovered.is_none());
+    }
+
+    #[test]
+    fn discover_returns_context_inside_git_repo() {
+        let repo = tempfile::TempDir::new().expect("create tempdir");
+        init_git_repo(repo.path());
+        fs::create_dir_all(repo.path().join("src")).expect("create src directory");
+
+        let source = repo.path().join("src");
+        let discovered = GitRepoContext::discover(&source)
+            .expect("discover should not error")
+            .expect("repo context should be found");
+
+        let expected_workdir = fs::canonicalize(repo.path()).expect("canonicalize repo path");
+        assert_eq!(discovered.workdir, expected_workdir);
+        assert_eq!(discovered.source_prefix, PathBuf::from("src"));
+    }
+
+    #[test]
+    fn tracked_paths_from_index_returns_committed_files() {
+        let repo = tempfile::TempDir::new().expect("create tempdir");
+        init_git_repo(repo.path());
+        fs::write(repo.path().join("tracked.txt"), b"tracked\n").expect("write tracked");
+        run_git(repo.path(), &["add", "tracked.txt"]);
+        run_git(repo.path(), &["commit", "-m", "initial"]);
+
+        let context = GitRepoContext::discover(repo.path())
+            .expect("discover should not error")
+            .expect("repo context should exist");
+        let tracked = tracked_paths_from_index(&context).expect("list tracked paths");
+        assert!(tracked.iter().any(|p| p == &PathBuf::from("tracked.txt")));
+    }
+
+    #[test]
+    fn untracked_paths_from_status_excludes_gitignored() {
+        let repo = tempfile::TempDir::new().expect("create tempdir");
+        init_git_repo(repo.path());
+        fs::write(repo.path().join("tracked.txt"), b"tracked\n").expect("write tracked");
+        fs::write(repo.path().join(".gitignore"), b"ignored.txt\n").expect("write gitignore");
+        run_git(repo.path(), &["add", "tracked.txt", ".gitignore"]);
+        run_git(repo.path(), &["commit", "-m", "initial"]);
+
+        fs::write(repo.path().join("new.txt"), b"new\n").expect("write new file");
+        fs::write(repo.path().join("ignored.txt"), b"ignored\n").expect("write ignored file");
+
+        let context = GitRepoContext::discover(repo.path())
+            .expect("discover should not error")
+            .expect("repo context should exist");
+        let untracked = untracked_paths_from_status(&context).expect("list untracked paths");
+
+        assert!(untracked.iter().any(|p| p == &PathBuf::from("new.txt")));
+        assert!(!untracked.iter().any(|p| p == &PathBuf::from("ignored.txt")));
+    }
+
+    fn init_git_repo(path: &std::path::Path) {
+        run_git(path, &["init"]);
+        run_git(path, &["config", "user.name", "git-closure-test"]);
+        run_git(
+            path,
+            &["config", "user.email", "git-closure-test@example.com"],
+        );
+    }
+
+    fn run_git(path: &std::path::Path, args: &[&str]) {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(path)
+            .status()
+            .expect("run git command");
+        assert!(status.success(), "git command failed: git {:?}", args);
     }
 }
