@@ -17,6 +17,8 @@ use crate::utils::{
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
+const VERIFY_SYNTHETIC_ROOT: &str = "/gcl-verify-root";
+
 /// Policy profiles for snapshot materialization.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum MaterializePolicy {
@@ -50,7 +52,24 @@ pub struct MaterializeOptions {
 /// 3. Each regular file's `:size` matches `content.len()`.
 /// 4. Each path is safe (no `..`, no absolute paths).
 /// 5. Each mode string is valid octal.
+///
+/// Symlink target containment is checked against a fixed synthetic root
+/// (`/gcl-verify-root`). For output-root-faithful containment checks, use
+/// [`verify_snapshot_with_root`].
 pub fn verify_snapshot(snapshot: &Path) -> Result<VerifyReport> {
+    verify_snapshot_against_root(snapshot, Path::new(VERIFY_SYNTHETIC_ROOT))
+}
+
+/// Verifies snapshot integrity and checks symlink containment against `root`.
+///
+/// This provides a root-anchored check aligned with materialization semantics.
+/// `root` is canonicalized first, so it must exist.
+pub fn verify_snapshot_with_root(snapshot: &Path, root: &Path) -> Result<VerifyReport> {
+    let canonical_root = fs::canonicalize(root).map_err(|err| io_error_with_path(err, root))?;
+    verify_snapshot_against_root(snapshot, &canonical_root)
+}
+
+fn verify_snapshot_against_root(snapshot: &Path, containment_root: &Path) -> Result<VerifyReport> {
     let text = fs::read_to_string(snapshot).map_err(|err| io_error_with_path(err, snapshot))?;
 
     let (header, files) = parse_snapshot(&text)?;
@@ -67,8 +86,7 @@ pub fn verify_snapshot(snapshot: &Path) -> Result<VerifyReport> {
         let _ = sanitized_relative_path(&file.path)?;
 
         if let Some(target) = &file.symlink_target {
-            let synthetic_root = PathBuf::from("/gcl-verify-root");
-            let entry_parent = synthetic_root.join(
+            let entry_parent = containment_root.join(
                 Path::new(&file.path)
                     .parent()
                     .unwrap_or_else(|| Path::new("")),
@@ -79,7 +97,7 @@ pub fn verify_snapshot(snapshot: &Path) -> Result<VerifyReport> {
                 entry_parent.join(target)
             };
             let normalized = lexical_normalize(&effective_target)?;
-            if !normalized.starts_with(&synthetic_root) {
+            if !normalized.starts_with(containment_root) {
                 return Err(GitClosureError::UnsafePath(format!(
                     "symlink target would escape output root for {}: {}",
                     file.path, target
@@ -115,6 +133,7 @@ pub fn verify_snapshot(snapshot: &Path) -> Result<VerifyReport> {
 
     Ok(VerifyReport {
         file_count: files.len(),
+        symlink_targets_checked: true,
     })
 }
 

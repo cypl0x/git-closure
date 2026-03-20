@@ -63,6 +63,9 @@ pub struct BuildOptions {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifyReport {
     pub file_count: usize,
+    /// Whether symlink targets were checked for lexical containment against a
+    /// root path during verification.
+    pub symlink_targets_checked: bool,
 }
 
 /// A single entry returned by [`crate::list_snapshot`].

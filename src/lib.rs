@@ -9,6 +9,7 @@
 //! | [`build_snapshot_from_source`] | Build from a URL / source specifier |
 //! | [`build_snapshot_from_provider`] | Build via a custom [`providers::Provider`] |
 //! | [`verify_snapshot`] | Verify snapshot integrity |
+//! | [`verify_snapshot_with_root`] | Verify snapshot integrity against an explicit root |
 //! | [`materialize_snapshot`] | Restore a snapshot to a directory |
 //! | [`materialize_snapshot_with_options`] | Restore with explicit policy options |
 //! | [`diff_snapshots`] | Compare two snapshots and return structured differences |
@@ -53,8 +54,8 @@ pub(crate) mod utils;
 
 pub use error::GitClosureError;
 pub use materialize::{
-    materialize_snapshot, materialize_snapshot_with_options, verify_snapshot, MaterializeOptions,
-    MaterializePolicy,
+    materialize_snapshot, materialize_snapshot_with_options, verify_snapshot,
+    verify_snapshot_with_root, MaterializeOptions, MaterializePolicy,
 };
 pub use snapshot::build::{
     build_snapshot, build_snapshot_from_provider, build_snapshot_from_source,
@@ -95,7 +96,7 @@ mod tests {
         ensure_git_source_is_clean, evaluate_git_status_porcelain, git_ls_files,
         parse_porcelain_entry, GitRepoContext,
     };
-    use crate::materialize::{materialize_snapshot, verify_snapshot};
+    use crate::materialize::{materialize_snapshot, verify_snapshot, verify_snapshot_with_root};
     use crate::providers::{FetchedSource, Provider};
     use crate::snapshot::build::{
         build_snapshot, build_snapshot_from_provider, build_snapshot_with_options,
@@ -229,6 +230,71 @@ mod tests {
 
         let report = verify_snapshot(&snapshot).expect("verify should pass");
         assert_eq!(report.file_count, 1);
+        assert!(
+            report.symlink_targets_checked,
+            "verify report must indicate symlink containment checks ran"
+        );
+    }
+
+    #[test]
+    fn verify_with_root_rejects_synthetic_root_prefixed_absolute_target() {
+        let temp = TempDir::new().expect("create tempdir");
+        let snapshot = temp.path().join("synthetic-prefix.gcl");
+        let output_root = temp.path().join("output-root");
+        fs::create_dir_all(&output_root).expect("create output root");
+
+        let files = vec![SnapshotFile {
+            path: "link".to_string(),
+            sha256: String::new(),
+            mode: "120000".to_string(),
+            size: 0,
+            encoding: None,
+            symlink_target: Some("/gcl-verify-root/inside".to_string()),
+            content: Vec::new(),
+        }];
+        let snapshot_hash = compute_snapshot_hash(&files);
+        let text = format!(
+            ";; git-closure snapshot v0.1\n;; snapshot-hash: {snapshot_hash}\n;; file-count: 1\n\n(\n  ((:path \"link\" :type \"symlink\" :target \"/gcl-verify-root/inside\") \"\")\n)\n"
+        );
+        fs::write(&snapshot, text).expect("write snapshot");
+
+        verify_snapshot(&snapshot)
+            .expect("baseline verify uses synthetic root and should accept this target");
+
+        let err = verify_snapshot_with_root(&snapshot, &output_root)
+            .expect_err("verify with explicit root must reject escaping target");
+        assert!(matches!(err, GitClosureError::UnsafePath(_)));
+    }
+
+    #[test]
+    fn verify_with_root_accepts_safe_relative_symlink_target() {
+        let temp = TempDir::new().expect("create tempdir");
+        let snapshot = temp.path().join("safe-rel.gcl");
+        let output_root = temp.path().join("output-root");
+        fs::create_dir_all(&output_root).expect("create output root");
+
+        let files = vec![SnapshotFile {
+            path: "subdir/link".to_string(),
+            sha256: String::new(),
+            mode: "120000".to_string(),
+            size: 0,
+            encoding: None,
+            symlink_target: Some("../sibling".to_string()),
+            content: Vec::new(),
+        }];
+        let snapshot_hash = compute_snapshot_hash(&files);
+        let text = format!(
+            ";; git-closure snapshot v0.1\n;; snapshot-hash: {snapshot_hash}\n;; file-count: 1\n\n(\n  ((:path \"subdir/link\" :type \"symlink\" :target \"../sibling\") \"\")\n)\n"
+        );
+        fs::write(&snapshot, text).expect("write snapshot");
+
+        let report = verify_snapshot_with_root(&snapshot, &output_root)
+            .expect("safe relative symlink target should verify with explicit root");
+        assert_eq!(report.file_count, 1);
+        assert!(
+            report.symlink_targets_checked,
+            "verify report must indicate symlink containment checks ran"
+        );
     }
 
     #[test]
@@ -1400,6 +1466,7 @@ mod tests {
             "[`build_snapshot_from_source`]",
             "[`build_snapshot_from_provider`]",
             "[`verify_snapshot`]",
+            "[`verify_snapshot_with_root`]",
             "[`materialize_snapshot`]",
             "[`materialize_snapshot_with_options`]",
             "[`diff_snapshots`]",
