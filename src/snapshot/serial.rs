@@ -377,6 +377,14 @@ fn parse_files_value(value: &lexpr::Value) -> Result<Vec<SnapshotFile>> {
     }
 
     files.sort_by(|a, b| a.path.cmp(&b.path));
+    for window in files.windows(2) {
+        if window[0].path == window[1].path {
+            return Err(GitClosureError::Parse(format!(
+                "duplicate :path in snapshot: {}",
+                window[0].path
+            )));
+        }
+    }
     Ok(files)
 }
 
@@ -614,6 +622,89 @@ mod tests {
         let modified = text.replace(":mode ", ":future-key \"v\"\n     :mode ");
         let (_, files) = parse_snapshot(&modified).expect("unknown key must be silently ignored");
         assert_eq!(files[0].path, "a.txt");
+    }
+
+    #[test]
+    fn parse_snapshot_rejects_duplicate_regular_paths() {
+        let content_a = "a";
+        let content_b = "b";
+        let digest_a = crate::snapshot::hash::sha256_hex(content_a.as_bytes());
+        let digest_b = crate::snapshot::hash::sha256_hex(content_b.as_bytes());
+        let snapshot_hash = crate::snapshot::hash::sha256_hex(b"placeholder");
+        let input = format!(
+            ";; git-closure snapshot v0.1\n;; snapshot-hash: {snapshot_hash}\n;; file-count: 2\n\n(\n  ((:path \"dup.txt\" :sha256 \"{digest_a}\" :mode \"644\" :size 1) \"{content_a}\")\n  ((:path \"dup.txt\" :sha256 \"{digest_b}\" :mode \"644\" :size 1) \"{content_b}\")\n)\n"
+        );
+
+        let err = parse_snapshot(&input).expect_err("duplicate paths must be rejected");
+        match err {
+            GitClosureError::Parse(msg) => assert!(
+                msg.contains("duplicate :path") && msg.contains("dup.txt"),
+                "parse error should mention duplicate path, got: {msg}"
+            ),
+            other => panic!("expected Parse error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_snapshot_rejects_duplicate_regular_and_symlink_paths() {
+        let content = "x";
+        let digest = crate::snapshot::hash::sha256_hex(content.as_bytes());
+        let snapshot_hash = crate::snapshot::hash::sha256_hex(b"placeholder");
+        let input = format!(
+            ";; git-closure snapshot v0.1\n;; snapshot-hash: {snapshot_hash}\n;; file-count: 2\n\n(\n  ((:path \"dup.txt\" :sha256 \"{digest}\" :mode \"644\" :size 1) \"{content}\")\n  ((:path \"dup.txt\" :type \"symlink\" :target \"target.txt\") \"\")\n)\n"
+        );
+
+        let err = parse_snapshot(&input)
+            .expect_err("duplicate path between regular and symlink must be rejected");
+        match err {
+            GitClosureError::Parse(msg) => assert!(
+                msg.contains("duplicate :path") && msg.contains("dup.txt"),
+                "parse error should mention duplicate path, got: {msg}"
+            ),
+            other => panic!("expected Parse error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verify_snapshot_rejects_duplicate_paths_via_parse() {
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().expect("create tempdir");
+        let snapshot = dir.path().join("duplicate.gcl");
+
+        let content_a = "a";
+        let content_b = "b";
+        let digest_a = crate::snapshot::hash::sha256_hex(content_a.as_bytes());
+        let digest_b = crate::snapshot::hash::sha256_hex(content_b.as_bytes());
+        let files = vec![
+            SnapshotFile {
+                path: "dup.txt".to_string(),
+                sha256: digest_a.clone(),
+                mode: "644".to_string(),
+                size: 1,
+                encoding: None,
+                symlink_target: None,
+                content: content_a.as_bytes().to_vec(),
+            },
+            SnapshotFile {
+                path: "dup.txt".to_string(),
+                sha256: digest_b.clone(),
+                mode: "644".to_string(),
+                size: 1,
+                encoding: None,
+                symlink_target: None,
+                content: content_b.as_bytes().to_vec(),
+            },
+        ];
+        let snapshot_hash = crate::snapshot::hash::compute_snapshot_hash(&files);
+        let input = format!(
+            ";; git-closure snapshot v0.1\n;; snapshot-hash: {snapshot_hash}\n;; file-count: 2\n\n(\n  ((:path \"dup.txt\" :sha256 \"{digest_a}\" :mode \"644\" :size 1) \"{content_a}\")\n  ((:path \"dup.txt\" :sha256 \"{digest_b}\" :mode \"644\" :size 1) \"{content_b}\")\n)\n"
+        );
+        std::fs::write(&snapshot, input).expect("write duplicate snapshot");
+
+        let err = crate::materialize::verify_snapshot(&snapshot)
+            .expect_err("verify must reject snapshots with duplicate paths");
+        assert!(matches!(err, GitClosureError::Parse(_)));
     }
 
     #[test]
