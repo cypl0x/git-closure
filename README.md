@@ -13,9 +13,10 @@ emailed, archived, diffed, and materialized back into a filesystem tree.
 - `materialize` (`m`) - restore a snapshot into a directory
 - `verify` (`v`) - verify structural and per-file integrity
 - `list` (`l`) - list recorded entries
-- `diff` (`d`) - compare two snapshots (`text`, `--json`, `--stat`)
+- `diff` (`d`) - compare snapshots or snapshot-vs-directory (`text`, `--json`, `--stat`)
 - `fmt` (`f`) - canonicalize snapshot formatting
 - `render` (`r`) - render Markdown, HTML, or JSON reports
+- `summary` (`s`) - print compact snapshot metadata (`text` or `--json`)
 - `completion` (`c`) - generate shell completions (bash/zsh)
 
 ## Quick Start
@@ -47,6 +48,12 @@ git-closure verify repo.gcl
 
 # Count-only diff summary (exit 1 when differences exist)
 git-closure diff empty.gcl repo.gcl --stat
+
+# Snapshot vs working tree diff
+git-closure diff repo.gcl ./repo
+
+# Snapshot summary
+git-closure summary repo.gcl --json
 ```
 
 ## Sources and Providers
@@ -114,6 +121,7 @@ In a git repository, `build` follows git-tracked semantics by default:
 - `;; snapshot-hash` (structural hash)
 - `;; file-count`
 - optional `;; git-rev`, `;; git-branch`
+- optional provenance headers `;; source-uri`, `;; source-provider` for remote builds
 - S-expression entries for files/symlinks
 
 `snapshot-hash` uses SHA-256 over length-prefixed tuples with `u64` big-endian
@@ -133,11 +141,23 @@ captured from `git rev-parse HEAD` and is treated as informational metadata.
 These constraints prevent pre-planted symlink and path-traversal attacks during
 reconstruction.
 
+Library consumers can opt into alternate materialization profiles via
+`MaterializeOptions`:
+
+- `Strict` (default): requires empty output directory
+- `TrustedNonempty`: allows overlay into non-empty output directories
+- `NoSymlink`: rejects snapshots containing symlink entries
+
 ## diff Output Modes
 
 - default text: path-level changes with identity detail
 - `--json`: structured entries (`added`, `removed`, `modified`, `renamed`, `mode_changed`)
 - `--stat`: deterministic counts only
+
+The right-hand diff input is auto-detected:
+
+- existing directory path -> compare snapshot against live source tree
+- otherwise -> compare snapshot file vs snapshot file
 
 `diff` exit behavior:
 
@@ -164,6 +184,16 @@ git-closure render repo.gcl --format json -o report.json
 - formats: `markdown`, `html`, `json`
 - default output: stdout
 - optional file output: `-o/--output`
+
+## summary Output
+
+```bash
+git-closure summary repo.gcl
+git-closure summary repo.gcl --json
+```
+
+Summary includes snapshot hash, entry counts, total bytes, git metadata, and
+top-5 largest regular files.
 
 Symlink rendering policy:
 
@@ -224,7 +254,7 @@ nix shell nixpkgs#cargo-fuzz -c cargo fuzz run fuzz_lexical_normalize
 
 ## Roadmap
 
-- v0.1 (current): build/materialize/verify/list/diff/fmt/render/completion
+- v0.1 (current): build/materialize/verify/list/diff/fmt/render/summary/completion
 - post-v0.1 [planned]: richer remote providers, additional render/export targets,
   and further performance/security hardening
 

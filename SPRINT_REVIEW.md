@@ -1,22 +1,24 @@
-# Sprint Review (Post-Sprint v0.3 Backlog)
+# Sprint Review (Sprint B/C Completion)
 
-This review records the final consistency and risk checks after implementing the
-remaining backlog work.
+This review captures the required end-of-sprint checks after completing Sprint B
+and Sprint C items through `FR-04`, with `FR-05` intentionally deferred.
 
 ## 1) Cross-Artifact Consistency
 
-- CLI surface in `README.md`, `AGENTS.md`, and runtime `--help` is aligned to:
-  `build`, `materialize`, `verify`, `list`, `diff`, `fmt`, `render`,
+- CLI surface is aligned across `README.md`, `AGENTS.md`, and `--help` output:
+  `build`, `materialize`, `verify`, `list`, `diff`, `fmt`, `render`, `summary`,
   `completion`.
-- Deprecated/planned names (`query`, `watch`, `explode`, `export`) are no
-  longer presented as shipped commands.
-- Canonical metadata term is `git-rev` across implementation/docs/spec.
-- Provider semantics now match implementation: `gh:` auto-routes to
-  `github-api`, `github:` remains a Nix flake reference.
+- `README.md` now documents:
+  - snapshot-vs-directory diff auto-detection,
+  - remote build provenance headers (`source-uri`, `source-provider`),
+  - `summary` text/JSON modes,
+  - materialize policy profiles (`Strict`, `TrustedNonempty`, `NoSymlink`).
+- `SPEC.md` remains format-focused; no incompatible format changes were made in
+  this sprint.
 
 ## 2) Exit-Code Taxonomy Audit
 
-Representative command audit confirms:
+Verified via direct binary execution (`target/debug/git-closure`):
 
 - `diff` identical -> `0`
 - `diff` changed -> `1`
@@ -24,41 +26,40 @@ Representative command audit confirms:
 - `fmt --check` noncanonical -> `1`
 - `fmt --check` hash mismatch -> `2`
 - `fmt --check` parse error -> `3`
-- operational failure path (`verify` missing file) -> `4`
+- operational failures (`verify` missing file, provider rejection) -> `4`
 
 ## 3) Golden Fixture Verification
 
-Validated in devshell:
-
-- `nix develop -c cargo test --locked`
-- `tests/golden.rs` passes
-- `tests/rt13_spec_and_fixture.rs` passes
-
-The golden fixture net remains authoritative for `.gcl` byte-level stability.
+- `nix develop -c cargo test --locked --test golden` passed.
+- `nix develop -c cargo test --locked --test rt13_spec_and_fixture` passed.
+- Linux environment verified in this session; macOS verification not available
+  in the current environment.
 
 ## 4) Dead Code Scan
 
-`nix develop -c cargo check --locked` output scanned for `unused`/`dead_code`;
-no new warnings were observed.
+- `nix develop -c cargo check --locked` completed cleanly; no new `unused` or
+  `dead_code` warnings surfaced.
 
 ## 5) Dependency Duplication Audit
 
-`cargo tree --duplicates` reports expected transitive duplication (notably
-`getrandom` versions spanning runtime and dev/test stacks). No duplicate implies
-a correctness issue in current scope.
+- `nix develop -c cargo tree --duplicates` reports expected transitive
+  duplication (`getrandom` 0.2/0.3/0.4 and `webpki-roots` 0.26/1.0) driven by
+  runtime plus test/tooling stacks.
+- No new duplication introduced by Sprint B/C features.
 
 ## 6) Security Posture Review
 
-- `materialize_snapshot` path and symlink containment guards remain intact.
-- `GithubApiProvider` extraction now rejects writes through symlink ancestors and
-  rejects duplicate file/symlink entry collisions.
-- Redirect behavior for GitHub API tarball downloads is now covered by a mocked
-  redirect test.
+- `materialize_snapshot_with_options` preserves strict-by-default behavior;
+  `materialize_snapshot` remains a strict wrapper.
+- `TrustedNonempty` is explicit opt-in; path containment and symlink-ancestor
+  checks still run.
+- `NoSymlink` fails fast with `Parse` on symlink entries.
+- `GithubApiProvider` extraction continues to enforce path safety and symlink
+  containment for archive materialization.
 
-## 7) Remaining Risk Notes
+## 7) Deferred / Follow-up
 
-- `github-api` still depends on live network/API conditions for end-to-end public
-  repository behavior; mocked tests cover parser/status mapping/redirect/extract
-  invariants, but not every live edge case.
-- Transitive dependency duplicates remain acceptable for now; revisit only if
-  binary size/startup profiling justifies consolidation work.
+- `FR-05` (signed snapshot headers) is correctly left deferred by backlog
+  policy.
+- Follow-up candidate: add a CLI flag surface for materialize policy selection
+  if non-default library policies are expected to be used from shell workflows.
