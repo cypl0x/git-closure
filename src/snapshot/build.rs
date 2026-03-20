@@ -186,6 +186,7 @@ fn collect_files_from_git_repo(
     repo_relative_paths.dedup();
 
     let mut files = Vec::new();
+    let source_root = context.workdir.join(&context.source_prefix);
     for repo_relative in repo_relative_paths {
         if !is_within_prefix(&repo_relative, &context.source_prefix) {
             continue;
@@ -201,14 +202,12 @@ fn collect_files_from_git_repo(
             continue;
         }
 
-        let relative = absolute
-            .strip_prefix(context.workdir.join(&context.source_prefix))
-            .map_err(|err| {
-                GitClosureError::Parse(format!(
-                    "failed to create source-relative path for git entry: {} ({err})",
-                    absolute.display(),
-                ))
-            })?;
+        let relative = absolute.strip_prefix(&source_root).map_err(|err| {
+            GitClosureError::Parse(format!(
+                "failed to create source-relative path for git entry: {} ({err})",
+                absolute.display(),
+            ))
+        })?;
 
         let normalized = normalize_relative_path(relative)?;
         let attrs = collect_file_attributes(&absolute, &metadata)?;
@@ -422,5 +421,20 @@ mod tests {
         assert_eq!(attrs.symlink_target.as_deref(), Some("target.txt"));
         assert_eq!(attrs.mode, "120000");
         assert!(attrs.content.is_empty());
+    }
+
+    #[test]
+    fn collect_files_from_git_repo_precomputes_source_root_once() {
+        let source = include_str!("build.rs");
+        let legacy = [
+            "strip_prefix(",
+            "context.workdir.join(&context.source_prefix)",
+            ")",
+        ]
+        .join("");
+        assert!(
+            !source.contains(&legacy),
+            "collect_files_from_git_repo should avoid recomputing source root in loop"
+        );
     }
 }
