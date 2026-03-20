@@ -173,7 +173,7 @@ pub fn fetch_source(source: &str, provider_kind: ProviderKind) -> Result<Fetched
     }
 }
 
-fn choose_provider(spec: &SourceSpec, requested: ProviderKind) -> Result<ProviderKind> {
+pub(crate) fn choose_provider(spec: &SourceSpec, requested: ProviderKind) -> Result<ProviderKind> {
     if requested != ProviderKind::Auto {
         return Ok(requested);
     }

@@ -17,7 +17,7 @@ use crate::git::{
     ensure_git_source_is_clean, is_within_prefix, tracked_paths_from_index,
     untracked_paths_from_status, GitRepoContext,
 };
-use crate::providers::{fetch_source, Provider, ProviderKind, SourceSpec};
+use crate::providers::{choose_provider, fetch_source, Provider, ProviderKind, SourceSpec};
 use crate::utils::io_error_with_path;
 
 use crate::providers::run_command_output;
@@ -312,7 +312,8 @@ fn source_annotation_for_source(
     source: &str,
     provider_kind: ProviderKind,
 ) -> Result<Option<(String, String)>> {
-    let selected = selected_provider_kind(source, provider_kind)?;
+    let spec = SourceSpec::parse(source)?;
+    let selected = choose_provider(&spec, provider_kind)?;
     let provider_label = match selected {
         ProviderKind::Local => return Ok(None),
         ProviderKind::GitClone => "git-clone",
@@ -322,23 +323,6 @@ fn source_annotation_for_source(
     };
 
     Ok(Some((source.to_string(), provider_label.to_string())))
-}
-
-fn selected_provider_kind(source: &str, requested: ProviderKind) -> Result<ProviderKind> {
-    if requested != ProviderKind::Auto {
-        return Ok(requested);
-    }
-
-    let spec = SourceSpec::parse(source)?;
-    match spec {
-        SourceSpec::LocalPath(_) => Ok(ProviderKind::Local),
-        SourceSpec::NixFlakeRef(_) => Ok(ProviderKind::Nix),
-        SourceSpec::GitHubRepo { .. } => Ok(ProviderKind::GithubApi),
-        SourceSpec::GitLabRepo { .. } | SourceSpec::GitRemoteUrl(_) => Ok(ProviderKind::GitClone),
-        SourceSpec::Unknown(value) => Err(GitClosureError::Parse(format!(
-            "unsupported source syntax for auto provider: {value}"
-        ))),
-    }
 }
 
 // ── Path normalization ────────────────────────────────────────────────────────
@@ -486,6 +470,16 @@ mod tests {
         assert_eq!(
             annotation,
             Some(("gh:owner/repo@main".to_string(), "github-api".to_string()))
+        );
+    }
+
+    #[test]
+    fn source_annotation_uses_shared_provider_dispatch() {
+        let source = include_str!("build.rs");
+        let legacy_selector = ["fn ", "selected_provider_kind", "("].join("");
+        assert!(
+            source.contains("choose_provider(") && !source.contains(&legacy_selector),
+            "source annotation should delegate provider selection to providers::choose_provider"
         );
     }
 
