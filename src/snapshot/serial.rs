@@ -1,4 +1,5 @@
 /// S-expression serialization and deserialization for `.gcl` snapshot files.
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
@@ -228,6 +229,7 @@ fn parse_files_value(
     }
 
     let mut files = Vec::with_capacity(root.len());
+    let mut seen_paths = HashSet::with_capacity(root.len());
     let mut total_bytes = 0u64;
 
     for entry in root {
@@ -356,6 +358,12 @@ fn parse_files_value(
         }
 
         let path = path.ok_or_else(|| GitClosureError::Parse("missing :path".to_string()))?;
+        if !seen_paths.insert(path.clone()) {
+            return Err(GitClosureError::Parse(format!(
+                "duplicate :path in snapshot: {}",
+                path
+            )));
+        }
         if entry_type.as_deref() == Some("symlink") {
             if sha256.as_deref().map(|s| !s.is_empty()).unwrap_or(false) {
                 return Err(GitClosureError::Parse(format!(
@@ -746,6 +754,26 @@ mod tests {
             GitClosureError::Parse(msg) => assert!(
                 msg.contains("duplicate :path") && msg.contains("dup.txt"),
                 "parse error should mention duplicate path, got: {msg}"
+            ),
+            other => panic!("expected Parse error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_snapshot_rejects_duplicate_path_before_decoding_later_content() {
+        let content = "a";
+        let digest = crate::snapshot::hash::sha256_hex(content.as_bytes());
+        let snapshot_hash = crate::snapshot::hash::sha256_hex(b"placeholder");
+        let huge_invalid_base64 = format!("{}!", "A".repeat(1024 * 1024));
+        let input = format!(
+            ";; git-closure snapshot v0.1\n;; snapshot-hash: {snapshot_hash}\n;; file-count: 2\n\n(\n  ((:path \"dup.txt\" :sha256 \"{digest}\" :mode \"644\" :size 1) \"{content}\")\n  ((:path \"dup.txt\" :sha256 \"{digest}\" :mode \"644\" :size 1 :encoding \"base64\") \"{huge_invalid_base64}\")\n)\n"
+        );
+
+        let err = parse_snapshot(&input).expect_err("duplicate path must be rejected early");
+        match err {
+            GitClosureError::Parse(msg) => assert!(
+                msg.contains("duplicate :path") && msg.contains("dup.txt"),
+                "error should report duplicate path before decoding, got: {msg}"
             ),
             other => panic!("expected Parse error, got {other:?}"),
         }
