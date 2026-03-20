@@ -76,6 +76,8 @@ Provider behavior:
 GitHub authentication/rate limits:
 
 - Set `GCL_GITHUB_TOKEN` for private repositories or higher API limits.
+- GitHub tarball downloads are capped at 512 MiB by default; override with `GCL_GITHUB_TARBALL_MAX_BYTES`.
+- This network tarball cap is separate from parse-time snapshot limits (`ParseLimits` in the library API).
 
 Important syntax distinction:
 

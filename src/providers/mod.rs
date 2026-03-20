@@ -15,6 +15,13 @@ type Result<T> = std::result::Result<T, GitClosureError>;
 
 const GITHUB_API_BASE: &str = "https://api.github.com/repos";
 const GITHUB_TOKEN_ENV: &str = "GCL_GITHUB_TOKEN";
+const GITHUB_TARBALL_MAX_BYTES_ENV: &str = "GCL_GITHUB_TARBALL_MAX_BYTES";
+/// Default maximum tarball size accepted from github-api downloads.
+///
+/// 512 MiB is large enough for substantial repositories while preventing
+/// unbounded memory growth when reading response bodies from untrusted
+/// network endpoints.
+const DEFAULT_GITHUB_TARBALL_MAX_BYTES: u64 = 512 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderKind {
@@ -368,6 +375,7 @@ fn download_github_tarball(source: &ParsedGithubApiSource) -> Result<Vec<u8>> {
 }
 
 fn download_tarball_url(url: &str, source_name: &str, token: Option<&str>) -> Result<Vec<u8>> {
+    let max_bytes = github_tarball_max_bytes()?;
     let agent = ureq::builder().build();
     let mut request = agent
         .get(url)
@@ -379,15 +387,37 @@ fn download_tarball_url(url: &str, source_name: &str, token: Option<&str>) -> Re
 
     match request.call() {
         Ok(response) => {
+            if let Some(content_length_header) = response.header("Content-Length") {
+                if let Ok(content_length) = content_length_header.trim().parse::<u64>() {
+                    if content_length > max_bytes {
+                        return Err(GitClosureError::Parse(format!(
+                            "github-api: tarball download for {source_name} exceeds limit {max_bytes} bytes (Content-Length: {content_length})",
+                        )));
+                    }
+                }
+            }
+
             let mut body = Vec::new();
-            response
-                .into_reader()
-                .read_to_end(&mut body)
-                .map_err(|err| {
+            let mut reader = response.into_reader();
+            let mut total_read = 0u64;
+            let mut chunk = [0u8; 8192];
+            loop {
+                let read = reader.read(&mut chunk).map_err(|err| {
                     GitClosureError::Parse(format!(
                         "github-api: failed to read tarball response for {source_name}: {err}",
                     ))
                 })?;
+                if read == 0 {
+                    break;
+                }
+                total_read = total_read.saturating_add(read as u64);
+                if total_read > max_bytes {
+                    return Err(GitClosureError::Parse(format!(
+                        "github-api: tarball download for {source_name} exceeded limit {max_bytes} bytes (read {total_read} bytes)",
+                    )));
+                }
+                body.extend_from_slice(&chunk[..read]);
+            }
             Ok(body)
         }
         Err(ureq::Error::Status(status, response)) => {
@@ -402,6 +432,32 @@ fn download_tarball_url(url: &str, source_name: &str, token: Option<&str>) -> Re
         }
         Err(ureq::Error::Transport(err)) => Err(GitClosureError::Parse(format!(
             "github-api: request failed for {source_name}: {err}",
+        ))),
+    }
+}
+
+fn github_tarball_max_bytes() -> Result<u64> {
+    match std::env::var(GITHUB_TARBALL_MAX_BYTES_ENV) {
+        Ok(raw) => {
+            let raw = raw.trim();
+            if raw.is_empty() {
+                return Ok(DEFAULT_GITHUB_TARBALL_MAX_BYTES);
+            }
+            let parsed = raw.parse::<u64>().map_err(|err| {
+                GitClosureError::Parse(format!(
+                    "github-api: invalid {GITHUB_TARBALL_MAX_BYTES_ENV} value {raw:?}: {err}"
+                ))
+            })?;
+            if parsed == 0 {
+                return Err(GitClosureError::Parse(format!(
+                    "github-api: invalid {GITHUB_TARBALL_MAX_BYTES_ENV} value {raw:?}: must be > 0"
+                )));
+            }
+            Ok(parsed)
+        }
+        Err(std::env::VarError::NotPresent) => Ok(DEFAULT_GITHUB_TARBALL_MAX_BYTES),
+        Err(std::env::VarError::NotUnicode(_)) => Err(GitClosureError::Parse(format!(
+            "github-api: invalid {GITHUB_TARBALL_MAX_BYTES_ENV}: value is not valid UTF-8"
         ))),
     }
 }
@@ -714,7 +770,10 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::path::Path;
+    use std::sync::Mutex;
     use std::time::Duration;
+
+    static TARBALL_LIMIT_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn make_gzipped_tar(entries: &[(&str, &[u8])]) -> Vec<u8> {
         let mut gz = GzEncoder::new(Vec::new(), Compression::default());
@@ -1030,6 +1089,72 @@ mod tests {
         assert!(
             server.join().expect("join test server"),
             "server should observe redirect then tarball request"
+        );
+    }
+
+    #[test]
+    fn github_api_download_rejects_content_length_over_limit() {
+        let _env_guard = TARBALL_LIMIT_ENV_LOCK.lock().expect("lock env mutation");
+        std::env::set_var("GCL_GITHUB_TARBALL_MAX_BYTES", "8");
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept connection");
+            let response =
+                "HTTP/1.1 200 OK\r\nContent-Length: 9\r\nConnection: close\r\n\r\n123456789";
+            stream
+                .write_all(response.as_bytes())
+                .expect("write response");
+        });
+
+        let result =
+            super::download_tarball_url(&format!("http://{addr}/tarball"), "owner/repo@HEAD", None);
+        std::env::remove_var("GCL_GITHUB_TARBALL_MAX_BYTES");
+        server.join().expect("join test server");
+
+        let err = result.expect_err("content-length over configured limit must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("owner/repo@HEAD") && msg.contains("8") && msg.contains("Content-Length"),
+            "error should mention source and limit, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn github_api_download_rejects_stream_over_limit() {
+        let _env_guard = TARBALL_LIMIT_ENV_LOCK.lock().expect("lock env mutation");
+        std::env::set_var("GCL_GITHUB_TARBALL_MAX_BYTES", "16");
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept connection");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("set read timeout");
+            let mut req_buf = [0u8; 2048];
+            let _ = stream.read(&mut req_buf).expect("read request");
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n")
+                .expect("write headers");
+            for _ in 0..4 {
+                if stream.write_all(b"12345678").is_err() {
+                    break;
+                }
+            }
+        });
+
+        let result =
+            super::download_tarball_url(&format!("http://{addr}/stream"), "owner/repo@HEAD", None);
+        std::env::remove_var("GCL_GITHUB_TARBALL_MAX_BYTES");
+        server.join().expect("join test server");
+
+        let err = result.expect_err("stream over configured limit must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("owner/repo@HEAD") && msg.contains("16") && msg.contains("read"),
+            "error should mention source and limit, got: {msg}"
         );
     }
 
