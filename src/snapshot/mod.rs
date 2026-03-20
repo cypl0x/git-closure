@@ -45,12 +45,17 @@ pub struct SnapshotHeader {
 }
 
 /// Options that influence which files are included in a snapshot build.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BuildOptions {
     /// Include files not tracked by git (mirrors `git ls-files --others`).
     pub include_untracked: bool,
     /// Abort the build if the working tree is dirty (uncommitted changes).
     pub require_clean: bool,
+    /// Optional provenance annotation for remote-origin snapshots.
+    ///
+    /// Stored as `(source_uri, source_provider)` and serialized into header
+    /// comments as `source-uri` and `source-provider`.
+    pub source_annotation: Option<(String, String)>,
 }
 
 /// Summary returned by [`crate::verify_snapshot`].

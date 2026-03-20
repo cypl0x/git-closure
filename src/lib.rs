@@ -960,6 +960,7 @@ mod tests {
             &BuildOptions {
                 include_untracked: true,
                 require_clean: false,
+                source_annotation: None,
             },
         )
         .expect("build snapshot");
@@ -988,6 +989,7 @@ mod tests {
             &BuildOptions {
                 include_untracked: false,
                 require_clean: true,
+                source_annotation: None,
             },
         );
         assert!(
@@ -1015,6 +1017,7 @@ mod tests {
             &BuildOptions {
                 include_untracked: false,
                 require_clean: true,
+                source_annotation: None,
             },
         );
         assert!(result.is_err(), "staged change should fail require_clean");
@@ -1040,6 +1043,7 @@ mod tests {
             &BuildOptions {
                 include_untracked: false,
                 require_clean: true,
+                source_annotation: None,
             },
         );
         assert!(
@@ -1068,6 +1072,7 @@ mod tests {
             &BuildOptions {
                 include_untracked: false,
                 require_clean: true,
+                source_annotation: None,
             },
         );
         assert!(
@@ -1108,6 +1113,7 @@ mod tests {
             &BuildOptions {
                 include_untracked: false,
                 require_clean: true,
+                source_annotation: None,
             },
         );
         assert!(

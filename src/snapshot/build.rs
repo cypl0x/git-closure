@@ -17,7 +17,7 @@ use crate::git::{
     ensure_git_source_is_clean, is_within_prefix, tracked_paths_from_index,
     untracked_paths_from_status, GitRepoContext,
 };
-use crate::providers::{fetch_source, Provider, ProviderKind};
+use crate::providers::{fetch_source, Provider, ProviderKind, SourceSpec};
 use crate::utils::io_error_with_path;
 
 use crate::providers::run_command_output;
@@ -40,8 +40,10 @@ pub fn build_snapshot_from_source(
     options: &BuildOptions,
     provider_kind: ProviderKind,
 ) -> Result<()> {
+    let mut annotated_options = options.clone();
+    annotated_options.source_annotation = source_annotation_for_source(source, provider_kind)?;
     let fetched = fetch_source(source, provider_kind)?;
-    build_snapshot_with_options(&fetched.root, output, options)
+    build_snapshot_with_options(&fetched.root, output, &annotated_options)
 }
 
 /// Builds a snapshot using a caller-supplied [`Provider`] implementation.
@@ -75,12 +77,17 @@ pub fn build_snapshot_with_options(
 
     let snapshot_hash = compute_snapshot_hash(&files);
     let (git_rev, git_branch) = read_git_metadata(&source);
+    let mut extra_headers = Vec::new();
+    if let Some((source_uri, source_provider)) = &options.source_annotation {
+        extra_headers.push(("source-uri".to_string(), source_uri.clone()));
+        extra_headers.push(("source-provider".to_string(), source_provider.clone()));
+    }
     let header = SnapshotHeader {
         snapshot_hash,
         file_count: files.len(),
         git_rev,
         git_branch,
-        extra_headers: Vec::new(),
+        extra_headers,
     };
     let serialized = serialize_snapshot(&files, &header);
 
@@ -301,6 +308,39 @@ fn read_git_metadata(dir: &Path) -> (Option<String>, Option<String>) {
     (rev, branch)
 }
 
+fn source_annotation_for_source(
+    source: &str,
+    provider_kind: ProviderKind,
+) -> Result<Option<(String, String)>> {
+    let selected = selected_provider_kind(source, provider_kind)?;
+    let provider_label = match selected {
+        ProviderKind::Local => return Ok(None),
+        ProviderKind::GitClone => "git-clone",
+        ProviderKind::Nix => "nix",
+        ProviderKind::GithubApi => "github-api",
+        ProviderKind::Auto => unreachable!("provider auto should be resolved"),
+    };
+
+    Ok(Some((source.to_string(), provider_label.to_string())))
+}
+
+fn selected_provider_kind(source: &str, requested: ProviderKind) -> Result<ProviderKind> {
+    if requested != ProviderKind::Auto {
+        return Ok(requested);
+    }
+
+    let spec = SourceSpec::parse(source)?;
+    match spec {
+        SourceSpec::LocalPath(_) => Ok(ProviderKind::Local),
+        SourceSpec::NixFlakeRef(_) => Ok(ProviderKind::Nix),
+        SourceSpec::GitHubRepo { .. } => Ok(ProviderKind::GithubApi),
+        SourceSpec::GitLabRepo { .. } | SourceSpec::GitRemoteUrl(_) => Ok(ProviderKind::GitClone),
+        SourceSpec::Unknown(value) => Err(GitClosureError::Parse(format!(
+            "unsupported source syntax for auto provider: {value}"
+        ))),
+    }
+}
+
 // ── Path normalization ────────────────────────────────────────────────────────
 
 /// Converts a relative filesystem path to a normalized forward-slash UTF-8
@@ -435,6 +475,87 @@ mod tests {
         assert!(
             !source.contains(&legacy),
             "collect_files_from_git_repo should avoid recomputing source root in loop"
+        );
+    }
+
+    #[test]
+    fn source_annotation_for_github_api_includes_uri_and_provider() {
+        let annotation =
+            source_annotation_for_source("gh:owner/repo@main", ProviderKind::GithubApi)
+                .expect("github api source annotation should resolve");
+        assert_eq!(
+            annotation,
+            Some(("gh:owner/repo@main".to_string(), "github-api".to_string()))
+        );
+    }
+
+    #[test]
+    fn build_with_source_annotation_writes_headers_without_changing_snapshot_hash() {
+        let source = TempDir::new().expect("create source tempdir");
+        let out = TempDir::new().expect("create output tempdir");
+        fs::write(source.path().join("a.txt"), b"alpha\n").expect("write source file");
+
+        let plain_snapshot = out.path().join("plain.gcl");
+        build_snapshot(source.path(), &plain_snapshot).expect("build plain snapshot");
+
+        let annotated_snapshot = out.path().join("annotated.gcl");
+        build_snapshot_with_options(
+            source.path(),
+            &annotated_snapshot,
+            &BuildOptions {
+                include_untracked: false,
+                require_clean: false,
+                source_annotation: Some((
+                    "gh:owner/repo@main".to_string(),
+                    "github-api".to_string(),
+                )),
+            },
+        )
+        .expect("build annotated snapshot");
+
+        let plain_text = fs::read_to_string(&plain_snapshot).expect("read plain snapshot");
+        let annotated_text =
+            fs::read_to_string(&annotated_snapshot).expect("read annotated snapshot");
+
+        let (plain_header, _plain_files) =
+            crate::snapshot::serial::parse_snapshot(&plain_text).expect("parse plain snapshot");
+        let (annotated_header, _annotated_files) =
+            crate::snapshot::serial::parse_snapshot(&annotated_text)
+                .expect("parse annotated snapshot");
+
+        assert_eq!(plain_header.snapshot_hash, annotated_header.snapshot_hash);
+        assert!(annotated_header
+            .extra_headers
+            .contains(&("source-uri".to_string(), "gh:owner/repo@main".to_string())));
+        assert!(annotated_header
+            .extra_headers
+            .contains(&("source-provider".to_string(), "github-api".to_string())));
+    }
+
+    #[test]
+    fn build_from_local_source_does_not_emit_provenance_headers() {
+        let source = TempDir::new().expect("create source tempdir");
+        fs::write(source.path().join("x.txt"), b"hello\n").expect("write source file");
+
+        let out = TempDir::new().expect("create output tempdir");
+        let snapshot = out.path().join("snapshot.gcl");
+        build_snapshot_from_source(
+            source.path().to_str().expect("utf-8 source path"),
+            &snapshot,
+            &BuildOptions::default(),
+            ProviderKind::Local,
+        )
+        .expect("build from local provider");
+
+        let text = fs::read_to_string(snapshot).expect("read snapshot");
+        let (header, _files) =
+            crate::snapshot::serial::parse_snapshot(&text).expect("parse snapshot");
+        assert!(
+            !header
+                .extra_headers
+                .iter()
+                .any(|(k, _)| k == "source-uri" || k == "source-provider"),
+            "local builds must not emit source provenance headers"
         );
     }
 }

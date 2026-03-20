@@ -178,6 +178,7 @@ fn run() -> Result<(), GitClosureError> {
             let options = BuildOptions {
                 include_untracked,
                 require_clean,
+                source_annotation: None,
             };
             build_snapshot_from_source(&source, &output, &options, provider.into())?;
         }
