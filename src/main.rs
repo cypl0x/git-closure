@@ -421,46 +421,51 @@ enum DiffJsonEntry {
         old_target: String,
         new_target: String,
     },
+    Unknown {
+        description: String,
+    },
 }
 
 fn diff_entries_json(entries: &[DiffEntry]) -> String {
     let payload: Vec<DiffJsonEntry> = entries
         .iter()
-        .filter_map(|entry| match entry {
-            DiffEntry::Added { path } => Some(DiffJsonEntry::Added { path: path.clone() }),
-            DiffEntry::Removed { path } => Some(DiffJsonEntry::Removed { path: path.clone() }),
+        .map(|entry| match entry {
+            DiffEntry::Added { path } => DiffJsonEntry::Added { path: path.clone() },
+            DiffEntry::Removed { path } => DiffJsonEntry::Removed { path: path.clone() },
             DiffEntry::Modified {
                 path,
                 old_sha256,
                 new_sha256,
-            } => Some(DiffJsonEntry::Modified {
+            } => DiffJsonEntry::Modified {
                 path: path.clone(),
                 old_sha256: old_sha256.clone(),
                 new_sha256: new_sha256.clone(),
-            }),
-            DiffEntry::Renamed { old_path, new_path } => Some(DiffJsonEntry::Renamed {
+            },
+            DiffEntry::Renamed { old_path, new_path } => DiffJsonEntry::Renamed {
                 old_path: old_path.clone(),
                 new_path: new_path.clone(),
-            }),
+            },
             DiffEntry::ModeChanged {
                 path,
                 old_mode,
                 new_mode,
-            } => Some(DiffJsonEntry::ModeChanged {
+            } => DiffJsonEntry::ModeChanged {
                 path: path.clone(),
                 old_mode: old_mode.clone(),
                 new_mode: new_mode.clone(),
-            }),
+            },
             DiffEntry::SymlinkTargetChanged {
                 path,
                 old_target,
                 new_target,
-            } => Some(DiffJsonEntry::SymlinkTargetChanged {
+            } => DiffJsonEntry::SymlinkTargetChanged {
                 path: path.clone(),
                 old_target: old_target.clone(),
                 new_target: new_target.clone(),
-            }),
-            _ => None,
+            },
+            _ => DiffJsonEntry::Unknown {
+                description: format!("{entry:?}"),
+            },
         })
         .collect();
     serde_json::to_string_pretty(&payload).expect("serialize diff JSON")
@@ -694,6 +699,24 @@ mod tests {
         );
         assert_eq!(arr[0]["old_target"], Value::String("a".to_string()));
         assert_eq!(arr[0]["new_target"], Value::String("b".to_string()));
+    }
+
+    #[test]
+    fn diff_entries_json_match_has_no_wildcard_drop_arm() {
+        let source = include_str!("main.rs");
+        let start = source
+            .find("fn diff_entries_json")
+            .expect("diff_entries_json function must exist");
+        let tail = &source[start..];
+        let end = tail
+            .find("fn list_entries_json")
+            .expect("list_entries_json function must exist");
+        let diff_entries_json_src = &tail[..end];
+
+        assert!(
+            !diff_entries_json_src.contains("_ => None"),
+            "diff_entries_json must not silently drop future DiffEntry variants"
+        );
     }
 
     #[test]
