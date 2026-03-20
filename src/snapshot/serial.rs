@@ -101,12 +101,26 @@ pub(crate) fn quote_string(input: &str) -> String {
 /// Files in the returned vector are guaranteed to be in lexicographic path
 /// order.  The `header.file_count` is cross-checked against the number of
 /// parsed entries.
+#[derive(Debug, Clone, Default)]
+pub struct ParseLimits {
+    pub max_entry_count: Option<usize>,
+    pub max_file_bytes: Option<u64>,
+    pub max_total_bytes: Option<u64>,
+}
+
 pub(crate) fn parse_snapshot(input: &str) -> Result<(SnapshotHeader, Vec<SnapshotFile>)> {
+    parse_snapshot_with_limits(input, None)
+}
+
+pub fn parse_snapshot_with_limits(
+    input: &str,
+    limits: Option<&ParseLimits>,
+) -> Result<(SnapshotHeader, Vec<SnapshotFile>)> {
     let (header, body) = split_header_body(input)?;
     let parsed = lexpr::from_str(body).map_err(|err| {
         GitClosureError::Parse(format!("failed to parse S-expression body: {err}"))
     })?;
-    let files = parse_files_value(&parsed)?;
+    let files = parse_files_value(&parsed, limits)?;
 
     if files.len() != header.file_count {
         return Err(GitClosureError::Parse(format!(
@@ -193,12 +207,26 @@ fn split_header_body(input: &str) -> Result<(SnapshotHeader, &str)> {
     ))
 }
 
-fn parse_files_value(value: &lexpr::Value) -> Result<Vec<SnapshotFile>> {
+fn parse_files_value(
+    value: &lexpr::Value,
+    limits: Option<&ParseLimits>,
+) -> Result<Vec<SnapshotFile>> {
     let root = value
         .to_ref_vec()
         .ok_or_else(|| GitClosureError::Parse("snapshot body must be a list".to_string()))?;
 
+    if let Some(limit) = limits.and_then(|l| l.max_entry_count) {
+        if root.len() > limit {
+            return Err(GitClosureError::Parse(format!(
+                "snapshot entry count {} exceeds max_entry_count limit {}",
+                root.len(),
+                limit
+            )));
+        }
+    }
+
     let mut files = Vec::with_capacity(root.len());
+    let mut total_bytes = 0u64;
 
     for entry in root {
         let pair = entry.to_ref_vec().ok_or_else(|| {
@@ -345,6 +373,15 @@ fn parse_files_value(value: &lexpr::Value) -> Result<Vec<SnapshotFile>> {
         let mode = mode.ok_or_else(|| GitClosureError::Parse("missing :mode".to_string()))?;
         let size = size.ok_or_else(|| GitClosureError::Parse("missing :size".to_string()))?;
 
+        if let Some(limit) = limits.and_then(|l| l.max_file_bytes) {
+            if size > limit {
+                return Err(GitClosureError::Parse(format!(
+                    "entry {} exceeds max_file_bytes limit ({size} > {limit})",
+                    path
+                )));
+            }
+        }
+
         let content = match encoding.as_deref() {
             Some("base64") => BASE64_STANDARD.decode(content_field).map_err(|err| {
                 GitClosureError::Parse(format!("invalid base64 content for {path}: {err}"))
@@ -363,6 +400,15 @@ fn parse_files_value(value: &lexpr::Value) -> Result<Vec<SnapshotFile>> {
                 expected: size,
                 actual: content.len() as u64,
             });
+        }
+
+        total_bytes = total_bytes.saturating_add(size);
+        if let Some(limit) = limits.and_then(|l| l.max_total_bytes) {
+            if total_bytes > limit {
+                return Err(GitClosureError::Parse(format!(
+                    "snapshot content exceeds max_total_bytes limit ({total_bytes} > {limit})"
+                )));
+            }
         }
 
         files.push(SnapshotFile {
@@ -704,6 +750,59 @@ mod tests {
 
         let err = crate::materialize::verify_snapshot(&snapshot)
             .expect_err("verify must reject snapshots with duplicate paths");
+        assert!(matches!(err, GitClosureError::Parse(_)));
+    }
+
+    #[test]
+    fn parse_snapshot_with_limits_rejects_entry_count_limit() {
+        let file_a = make_text_file("a.txt", "a");
+        let file_b = make_text_file("b.txt", "b");
+        let files = vec![file_a, file_b];
+        let header = make_header(&files);
+        let text = serialize_snapshot(&files, &header);
+
+        let limits = ParseLimits {
+            max_entry_count: Some(1),
+            max_file_bytes: None,
+            max_total_bytes: None,
+        };
+        let err = parse_snapshot_with_limits(&text, Some(&limits))
+            .expect_err("entry count limit must reject oversized snapshot");
+        assert!(matches!(err, GitClosureError::Parse(_)));
+    }
+
+    #[test]
+    fn parse_snapshot_with_limits_rejects_file_bytes_limit() {
+        let file = make_text_file("a.txt", "hello");
+        let files = vec![file];
+        let header = make_header(&files);
+        let text = serialize_snapshot(&files, &header);
+
+        let limits = ParseLimits {
+            max_entry_count: None,
+            max_file_bytes: Some(4),
+            max_total_bytes: None,
+        };
+        let err = parse_snapshot_with_limits(&text, Some(&limits))
+            .expect_err("file bytes limit must reject oversized entry");
+        assert!(matches!(err, GitClosureError::Parse(_)));
+    }
+
+    #[test]
+    fn parse_snapshot_with_limits_rejects_total_bytes_limit() {
+        let file_a = make_text_file("a.txt", "abc");
+        let file_b = make_text_file("b.txt", "def");
+        let files = vec![file_a, file_b];
+        let header = make_header(&files);
+        let text = serialize_snapshot(&files, &header);
+
+        let limits = ParseLimits {
+            max_entry_count: None,
+            max_file_bytes: None,
+            max_total_bytes: Some(5),
+        };
+        let err = parse_snapshot_with_limits(&text, Some(&limits))
+            .expect_err("total bytes limit must reject oversized aggregate");
         assert!(matches!(err, GitClosureError::Parse(_)));
     }
 
