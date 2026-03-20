@@ -4,6 +4,22 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT"
+description = "Deterministic, self-describing, verifiable source-tree snapshots"
+repository = "https://github.com/cypl0x/git-closure"
+documentation = "https://docs.rs/git-closure"
+homepage = "https://github.com/cypl0x/git-closure"
+readme = "README.md"
+keywords = ["snapshot", "git", "integrity", "reproducible", "cli"]
+categories = ["command-line-utilities", "development-tools"]
+include = [
+  "Cargo.toml",
+  "Cargo.lock",
+  "README.md",
+  "LICENSE",
+  "SPEC.md",
+  "src/**",
+  "tests/**",
+]
 
 [dependencies]
 base64 = "0.22"
