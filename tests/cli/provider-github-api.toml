@@ -1,3 +1,10 @@
 bin.name = "git-closure"
-args = ["build", "gl:group/repo", "--provider", "github-api", "--output", "out.gcl"]
+args = [
+  "build",
+  "gl:group/repo",
+  "--provider",
+  "github-api",
+  "--output",
+  "out.gcl",
+]
 status.code = 4
