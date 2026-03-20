@@ -10,7 +10,7 @@ use std::os::unix::fs::PermissionsExt;
 use crate::error::GitClosureError;
 use crate::snapshot::hash::{compute_snapshot_hash, sha256_hex};
 use crate::snapshot::serial::parse_snapshot;
-use crate::snapshot::{Result, VerifyReport};
+use crate::snapshot::{Result, SnapshotFile, SnapshotHeader, VerifyReport};
 use crate::utils::{
     ensure_no_symlink_ancestors, io_error_with_path, lexical_normalize, reject_if_symlink,
 };
@@ -57,7 +57,8 @@ pub struct MaterializeOptions {
 /// (`/gcl-verify-root`). For output-root-faithful containment checks, use
 /// [`verify_snapshot_with_root`].
 pub fn verify_snapshot(snapshot: &Path) -> Result<VerifyReport> {
-    verify_snapshot_against_root(snapshot, Path::new(VERIFY_SYNTHETIC_ROOT))
+    let (header, files) = parse_snapshot_file(snapshot)?;
+    verify_snapshot_parsed(&header, &files)
 }
 
 /// Verifies snapshot integrity and checks symlink containment against `root`.
@@ -66,23 +67,53 @@ pub fn verify_snapshot(snapshot: &Path) -> Result<VerifyReport> {
 /// `root` is canonicalized first, so it must exist.
 pub fn verify_snapshot_with_root(snapshot: &Path, root: &Path) -> Result<VerifyReport> {
     let canonical_root = fs::canonicalize(root).map_err(|err| io_error_with_path(err, root))?;
-    verify_snapshot_against_root(snapshot, &canonical_root)
+    let (header, files) = parse_snapshot_file(snapshot)?;
+    verify_snapshot_parsed_against_root(&header, &files, &canonical_root)
 }
 
-fn verify_snapshot_against_root(snapshot: &Path, containment_root: &Path) -> Result<VerifyReport> {
+/// Verifies an already parsed snapshot header + entries.
+///
+/// By default, this runs both structural integrity checks (`snapshot-hash`,
+/// `file-count`) and per-entry checks (`sha256`, `size`, path/mode validity,
+/// symlink target containment).
+///
+/// Symlink containment is evaluated against the same synthetic root used by
+/// [`verify_snapshot`]. Call [`verify_snapshot_with_root`] when a real output
+/// root is available and root-anchored containment semantics are required.
+pub fn verify_snapshot_parsed(
+    header: &SnapshotHeader,
+    files: &[SnapshotFile],
+) -> Result<VerifyReport> {
+    verify_snapshot_parsed_against_root(header, files, Path::new(VERIFY_SYNTHETIC_ROOT))
+}
+
+fn parse_snapshot_file(snapshot: &Path) -> Result<(SnapshotHeader, Vec<SnapshotFile>)> {
     let text = fs::read_to_string(snapshot).map_err(|err| io_error_with_path(err, snapshot))?;
+    parse_snapshot(&text)
+}
 
-    let (header, files) = parse_snapshot(&text)?;
+fn verify_snapshot_parsed_against_root(
+    header: &SnapshotHeader,
+    files: &[SnapshotFile],
+    containment_root: &Path,
+) -> Result<VerifyReport> {
+    if header.file_count != files.len() {
+        return Err(GitClosureError::Parse(format!(
+            "file-count header mismatch: expected {}, got {}",
+            header.file_count,
+            files.len()
+        )));
+    }
 
-    let recomputed = compute_snapshot_hash(&files);
+    let recomputed = compute_snapshot_hash(files);
     if recomputed != header.snapshot_hash {
         return Err(GitClosureError::HashMismatch {
-            expected: header.snapshot_hash,
+            expected: header.snapshot_hash.clone(),
             actual: recomputed,
         });
     }
 
-    for file in &files {
+    for file in files {
         let _ = sanitized_relative_path(&file.path)?;
 
         if let Some(target) = &file.symlink_target {

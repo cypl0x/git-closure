@@ -9,6 +9,7 @@
 //! | [`build_snapshot_from_source`] | Build from a URL / source specifier |
 //! | [`build_snapshot_from_provider`] | Build via a custom [`providers::Provider`] |
 //! | [`verify_snapshot`] | Verify snapshot integrity |
+//! | [`verify_snapshot_parsed`] | Verify pre-parsed snapshot data |
 //! | [`verify_snapshot_with_root`] | Verify snapshot integrity against an explicit root |
 //! | [`materialize_snapshot`] | Restore a snapshot to a directory |
 //! | [`materialize_snapshot_with_options`] | Restore with explicit policy options |
@@ -55,7 +56,7 @@ pub(crate) mod utils;
 pub use error::GitClosureError;
 pub use materialize::{
     materialize_snapshot, materialize_snapshot_with_options, verify_snapshot,
-    verify_snapshot_with_root, MaterializeOptions, MaterializePolicy,
+    verify_snapshot_parsed, verify_snapshot_with_root, MaterializeOptions, MaterializePolicy,
 };
 pub use snapshot::build::{
     build_snapshot, build_snapshot_from_provider, build_snapshot_from_source,
@@ -96,13 +97,15 @@ mod tests {
         ensure_git_source_is_clean, evaluate_git_status_porcelain, git_ls_files,
         parse_porcelain_entry, GitRepoContext,
     };
-    use crate::materialize::{materialize_snapshot, verify_snapshot, verify_snapshot_with_root};
+    use crate::materialize::{
+        materialize_snapshot, verify_snapshot, verify_snapshot_parsed, verify_snapshot_with_root,
+    };
     use crate::providers::{FetchedSource, Provider};
     use crate::snapshot::build::{
         build_snapshot, build_snapshot_from_provider, build_snapshot_with_options,
     };
     use crate::snapshot::hash::compute_snapshot_hash;
-    use crate::snapshot::{BuildOptions, SnapshotFile};
+    use crate::snapshot::{BuildOptions, SnapshotFile, SnapshotHeader};
     use std::fs;
     use std::io::Write;
     use std::path::{Path, PathBuf};
@@ -294,6 +297,52 @@ mod tests {
         assert!(
             report.symlink_targets_checked,
             "verify report must indicate symlink containment checks ran"
+        );
+    }
+
+    #[test]
+    fn verify_snapshot_parsed_accepts_valid_snapshot() {
+        let source = TempDir::new().expect("create source tempdir");
+        fs::write(source.path().join("ok.txt"), b"ok\n").expect("write source file");
+
+        let snapshot = source.path().join("snapshot.gcl");
+        build_snapshot(source.path(), &snapshot).expect("build snapshot");
+
+        let text = fs::read_to_string(&snapshot).expect("read built snapshot");
+        let (header, files) = crate::parse_snapshot(&text).expect("parse snapshot text");
+        let report = verify_snapshot_parsed(&header, &files).expect("parsed verify should pass");
+        assert_eq!(report.file_count, 1);
+        assert!(
+            report.symlink_targets_checked,
+            "verify report must indicate symlink containment checks ran"
+        );
+    }
+
+    #[test]
+    fn verify_snapshot_parsed_rejects_tampered_sha256_field() {
+        let content = b"ok\n".to_vec();
+        let files = vec![SnapshotFile {
+            path: "x.txt".to_string(),
+            sha256: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            mode: "644".to_string(),
+            size: content.len() as u64,
+            encoding: None,
+            symlink_target: None,
+            content,
+        }];
+        let header = SnapshotHeader {
+            snapshot_hash: compute_snapshot_hash(&files),
+            file_count: files.len(),
+            git_rev: None,
+            git_branch: None,
+            extra_headers: Vec::new(),
+        };
+
+        let err = verify_snapshot_parsed(&header, &files)
+            .expect_err("tampered sha256 field must fail parsed verification");
+        assert!(
+            matches!(err, GitClosureError::ContentHashMismatch { ref path, .. } if path == "x.txt"),
+            "expected ContentHashMismatch for x.txt, got: {err:?}"
         );
     }
 
@@ -1466,6 +1515,7 @@ mod tests {
             "[`build_snapshot_from_source`]",
             "[`build_snapshot_from_provider`]",
             "[`verify_snapshot`]",
+            "[`verify_snapshot_parsed`]",
             "[`verify_snapshot_with_root`]",
             "[`materialize_snapshot`]",
             "[`materialize_snapshot_with_options`]",
