@@ -84,6 +84,8 @@ pub fn verify_snapshot(snapshot: &Path) -> Result<VerifyReport> {
 ///   via pre-planted symlinks that bypass the lexical containment check.
 /// - All paths in the snapshot must be safe (no `..`, no absolute paths).
 /// - Symlink targets must not escape `output` when resolved lexically.
+/// - On non-Unix platforms, mode parsing still occurs but applying POSIX
+///   permissions is intentionally a no-op in v0.1.
 pub fn materialize_snapshot(snapshot: &Path, output: &Path) -> Result<()> {
     let text = fs::read_to_string(snapshot).map_err(|err| io_error_with_path(err, snapshot))?;
 
@@ -146,8 +148,18 @@ pub fn materialize_snapshot(snapshot: &Path, output: &Path) -> Result<()> {
                 )));
             }
             reject_if_symlink(&destination)?;
-            symlink(target_path, &destination)?;
-            continue;
+            #[cfg(unix)]
+            {
+                symlink(target_path, &destination)?;
+                continue;
+            }
+            #[cfg(not(unix))]
+            {
+                return Err(GitClosureError::Parse(format!(
+                    "symlink materialization is not supported on this platform: {}",
+                    file.path
+                )));
+            }
         }
 
         let digest = sha256_hex(&file.content);
@@ -169,9 +181,12 @@ pub fn materialize_snapshot(snapshot: &Path, output: &Path) -> Result<()> {
                 file.path, file.mode
             ))
         })?;
-        let permissions = fs::Permissions::from_mode(mode);
-        fs::set_permissions(&destination, permissions)
-            .map_err(|err| io_error_with_path(err, &destination))?;
+        #[cfg(unix)]
+        {
+            let permissions = fs::Permissions::from_mode(mode);
+            fs::set_permissions(&destination, permissions)
+                .map_err(|err| io_error_with_path(err, &destination))?;
+        }
     }
 
     Ok(())
