@@ -7,7 +7,9 @@ use flate2::read::GzDecoder;
 use tempfile::TempDir;
 
 use crate::error::GitClosureError;
-use crate::utils::{ensure_no_symlink_ancestors, reject_if_symlink, truncate_stderr};
+use crate::utils::{
+    ensure_no_symlink_ancestors, lexical_normalize, reject_if_symlink, truncate_stderr,
+};
 
 type Result<T> = std::result::Result<T, GitClosureError>;
 
@@ -496,13 +498,29 @@ fn extract_github_tarball(bytes: &[u8], destination: &Path) -> Result<()> {
             let target = target.ok_or_else(|| {
                 GitClosureError::Parse("github-api: symlink entry missing target".to_string())
             })?;
+            let target_path = target.as_ref();
+            let effective_target = if target_path.is_absolute() {
+                target_path.to_path_buf()
+            } else {
+                output_path
+                    .parent()
+                    .unwrap_or(destination)
+                    .join(target_path)
+            };
+            let normalized = lexical_normalize(&effective_target)?;
+            if !normalized.starts_with(destination) {
+                return Err(GitClosureError::UnsafePath(format!(
+                    "github-api: symlink target escapes destination: {}",
+                    relative.display()
+                )));
+            }
             #[cfg(unix)]
             {
-                std::os::unix::fs::symlink(&target, &output_path)?;
+                std::os::unix::fs::symlink(target_path, &output_path)?;
             }
             #[cfg(not(unix))]
             {
-                let _ = target;
+                let _ = target_path;
                 return Err(GitClosureError::Parse(
                     "github-api: symlink extraction is unsupported on this platform".to_string(),
                 ));
@@ -1112,6 +1130,111 @@ mod tests {
         super::extract_github_tarball(&tarball, &dest).expect("extract archive");
         let target = std::fs::read_link(dest.join("link")).expect("read extracted symlink");
         assert_eq!(target, std::path::PathBuf::from("target.txt"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn github_archive_extraction_rejects_absolute_symlink_target_escape() {
+        let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+        {
+            let mut builder = tar::Builder::new(&mut gz);
+
+            let mut link_header = tar::Header::new_gnu();
+            link_header.set_entry_type(tar::EntryType::Symlink);
+            link_header.set_size(0);
+            link_header.set_mode(0o777);
+            link_header
+                .set_link_name("/etc")
+                .expect("set absolute target");
+            link_header.set_cksum();
+            builder
+                .append_data(&mut link_header, "repo-abc/link", std::io::empty())
+                .expect("append symlink entry");
+
+            builder.finish().expect("finish tar builder");
+        }
+        let tarball = gz.finish().expect("finish gzip stream");
+
+        let tmp = tempfile::TempDir::new().expect("create tempdir");
+        let dest = tmp.path().join("out");
+        std::fs::create_dir_all(&dest).expect("create destination dir");
+
+        let err = super::extract_github_tarball(&tarball, &dest)
+            .expect_err("absolute symlink target must be rejected");
+        assert!(matches!(err, GitClosureError::UnsafePath(_)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn github_archive_extraction_rejects_relative_symlink_target_escape() {
+        let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+        {
+            let mut builder = tar::Builder::new(&mut gz);
+
+            let mut link_header = tar::Header::new_gnu();
+            link_header.set_entry_type(tar::EntryType::Symlink);
+            link_header.set_size(0);
+            link_header.set_mode(0o777);
+            link_header
+                .set_link_name("../../escape")
+                .expect("set traversal target");
+            link_header.set_cksum();
+            builder
+                .append_data(&mut link_header, "repo-abc/sub/link", std::io::empty())
+                .expect("append symlink entry");
+
+            builder.finish().expect("finish tar builder");
+        }
+        let tarball = gz.finish().expect("finish gzip stream");
+
+        let tmp = tempfile::TempDir::new().expect("create tempdir");
+        let dest = tmp.path().join("out");
+        std::fs::create_dir_all(&dest).expect("create destination dir");
+
+        let err = super::extract_github_tarball(&tarball, &dest)
+            .expect_err("relative symlink escape target must be rejected");
+        assert!(matches!(err, GitClosureError::UnsafePath(_)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn github_archive_extraction_allows_safe_relative_symlink_target() {
+        let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+        {
+            let mut builder = tar::Builder::new(&mut gz);
+
+            let mut file_header = tar::Header::new_gnu();
+            let file_bytes = b"ok\n";
+            file_header.set_size(file_bytes.len() as u64);
+            file_header.set_mode(0o644);
+            file_header.set_cksum();
+            builder
+                .append_data(&mut file_header, "repo-abc/sub/sibling", &file_bytes[..])
+                .expect("append sibling file");
+
+            let mut link_header = tar::Header::new_gnu();
+            link_header.set_entry_type(tar::EntryType::Symlink);
+            link_header.set_size(0);
+            link_header.set_mode(0o777);
+            link_header
+                .set_link_name("./sibling")
+                .expect("set safe target");
+            link_header.set_cksum();
+            builder
+                .append_data(&mut link_header, "repo-abc/sub/link", std::io::empty())
+                .expect("append symlink entry");
+
+            builder.finish().expect("finish tar builder");
+        }
+        let tarball = gz.finish().expect("finish gzip stream");
+
+        let tmp = tempfile::TempDir::new().expect("create tempdir");
+        let dest = tmp.path().join("out");
+        std::fs::create_dir_all(&dest).expect("create destination dir");
+
+        super::extract_github_tarball(&tarball, &dest).expect("safe symlink should extract");
+        let target = std::fs::read_link(dest.join("sub/link")).expect("read extracted symlink");
+        assert_eq!(target, std::path::PathBuf::from("./sibling"));
     }
 
     #[cfg(unix)]
