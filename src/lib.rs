@@ -882,6 +882,25 @@ mod tests {
     }
 
     #[test]
+    fn build_snapshot_from_source_local_path_succeeds() {
+        let source = TempDir::new().expect("create source tempdir");
+        fs::write(source.path().join("x.txt"), b"hello\n").expect("write source file");
+
+        let output_dir = TempDir::new().expect("create output tempdir");
+        let output = output_dir.path().join("snapshot.gcl");
+
+        crate::snapshot::build::build_snapshot_from_source(
+            source.path().to_str().expect("source path utf-8"),
+            &output,
+            &BuildOptions::default(),
+            crate::providers::ProviderKind::Local,
+        )
+        .expect("build from local source must succeed");
+
+        verify_snapshot(&output).expect("snapshot built from source should verify");
+    }
+
+    #[test]
     fn git_mode_excludes_untracked_by_default() {
         let repo = TempDir::new().expect("create temp repo");
         init_git_repo(repo.path());
