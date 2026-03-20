@@ -443,7 +443,7 @@ mod tests {
     fn collect_file_attributes_binary_file_gets_base64_encoding() {
         let dir = TempDir::new().unwrap();
         let file = dir.path().join("blob.bin");
-        fs::write(&file, &[0u8, 159, 255]).unwrap();
+        fs::write(&file, [0u8, 159, 255]).unwrap();
         let meta = fs::symlink_metadata(&file).unwrap();
         let attrs = collect_file_attributes(&file, &meta).unwrap();
         assert_eq!(attrs.encoding.as_deref(), Some("base64"));

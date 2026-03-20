@@ -426,7 +426,7 @@ mod tests {
         let files = value["files"].as_array().expect("files must be an array");
         let link_entry = files
             .iter()
-            .find(|entry| entry["path"] == serde_json::Value::from("link"))
+            .find(|entry| entry["path"].as_str() == Some("link"))
             .expect("json must include link entry");
         assert_eq!(link_entry["type"], serde_json::Value::from("symlink"));
         assert_eq!(
