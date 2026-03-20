@@ -135,6 +135,14 @@ impl FetchedSource {
         }
     }
 
+    /// Creates a fetched source backed by a temporary directory.
+    ///
+    /// The `TempDir` is held for the lifetime of the `FetchedSource` so the
+    /// temporary directory is not deleted while `root` is still in use.
+    ///
+    /// `root` must be a path within the managed `tempdir` directory. Passing an
+    /// unrelated path is a logic error because the returned source would then
+    /// point outside the owned temporary tree.
     pub fn temporary(root: PathBuf, tempdir: TempDir) -> Self {
         Self {
             root,

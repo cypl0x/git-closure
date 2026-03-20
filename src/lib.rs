@@ -1544,6 +1544,54 @@ fn main() {
     }
 
     #[test]
+    fn fetched_source_temporary_is_usable_from_public_api() {
+        let project = TempDir::new().expect("create external project tempdir");
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+
+        let cargo_toml = format!(
+            "[package]\nname = \"provider-api-smoke\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ngit-closure = {{ path = \"{}\" }}\ntempfile = \"3\"\n",
+            manifest_dir.display()
+        );
+        fs::write(project.path().join("Cargo.toml"), cargo_toml).expect("write Cargo.toml");
+
+        let src_dir = project.path().join("src");
+        fs::create_dir_all(&src_dir).expect("create src directory");
+        let main_rs = r#"use git_closure::providers::{FetchedSource, Provider};
+use git_closure::GitClosureError;
+use tempfile::TempDir;
+
+struct DemoProvider;
+
+impl Provider for DemoProvider {
+    fn fetch(&self, _source: &str) -> Result<FetchedSource, GitClosureError> {
+        let tempdir = TempDir::new()?;
+        let root = tempdir.path().to_path_buf();
+        Ok(FetchedSource::temporary(root, tempdir))
+    }
+}
+
+fn main() {
+    let _provider = DemoProvider;
+}
+"#;
+        fs::write(src_dir.join("main.rs"), main_rs).expect("write main.rs");
+
+        let output = Command::new("cargo")
+            .arg("check")
+            .arg("--quiet")
+            .current_dir(project.path())
+            .output()
+            .expect("run cargo check in external project");
+
+        assert!(
+            output.status.success(),
+            "public FetchedSource::temporary smoke-check failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
     fn serialize_symlink_type_field_uses_quote_string() {
         assert_eq!(
             crate::snapshot::serial::quote_string("symlink"),
