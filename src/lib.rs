@@ -195,6 +195,79 @@ mod tests {
     }
 
     #[test]
+    fn verify_rejects_absolute_symlink_target_outside_root() {
+        let temp = TempDir::new().expect("create tempdir");
+        let snapshot = temp.path().join("abs-link.gcl");
+
+        let files = vec![SnapshotFile {
+            path: "link".to_string(),
+            sha256: String::new(),
+            mode: "120000".to_string(),
+            size: 0,
+            encoding: None,
+            symlink_target: Some("/etc/passwd".to_string()),
+            content: Vec::new(),
+        }];
+        let snapshot_hash = compute_snapshot_hash(&files);
+        let text = format!(
+            ";; git-closure snapshot v0.1\n;; snapshot-hash: {snapshot_hash}\n;; file-count: 1\n\n(\n  ((:path \"link\" :type \"symlink\" :target \"/etc/passwd\") \"\")\n)\n"
+        );
+        fs::write(&snapshot, text).expect("write snapshot");
+
+        let err = verify_snapshot(&snapshot)
+            .expect_err("verify must reject absolute symlink targets outside synthetic root");
+        assert!(matches!(err, GitClosureError::UnsafePath(_)));
+    }
+
+    #[test]
+    fn verify_rejects_relative_symlink_target_traversal() {
+        let temp = TempDir::new().expect("create tempdir");
+        let snapshot = temp.path().join("rel-escape.gcl");
+
+        let files = vec![SnapshotFile {
+            path: "subdir/link".to_string(),
+            sha256: String::new(),
+            mode: "120000".to_string(),
+            size: 0,
+            encoding: None,
+            symlink_target: Some("../../escape".to_string()),
+            content: Vec::new(),
+        }];
+        let snapshot_hash = compute_snapshot_hash(&files);
+        let text = format!(
+            ";; git-closure snapshot v0.1\n;; snapshot-hash: {snapshot_hash}\n;; file-count: 1\n\n(\n  ((:path \"subdir/link\" :type \"symlink\" :target \"../../escape\") \"\")\n)\n"
+        );
+        fs::write(&snapshot, text).expect("write snapshot");
+
+        let err = verify_snapshot(&snapshot)
+            .expect_err("verify must reject relative symlink traversal targets");
+        assert!(matches!(err, GitClosureError::UnsafePath(_)));
+    }
+
+    #[test]
+    fn verify_accepts_safe_relative_symlink_target() {
+        let temp = TempDir::new().expect("create tempdir");
+        let snapshot = temp.path().join("rel-safe.gcl");
+
+        let files = vec![SnapshotFile {
+            path: "subdir/link".to_string(),
+            sha256: String::new(),
+            mode: "120000".to_string(),
+            size: 0,
+            encoding: None,
+            symlink_target: Some("../sibling".to_string()),
+            content: Vec::new(),
+        }];
+        let snapshot_hash = compute_snapshot_hash(&files);
+        let text = format!(
+            ";; git-closure snapshot v0.1\n;; snapshot-hash: {snapshot_hash}\n;; file-count: 1\n\n(\n  ((:path \"subdir/link\" :type \"symlink\" :target \"../sibling\") \"\")\n)\n"
+        );
+        fs::write(&snapshot, text).expect("write snapshot");
+
+        verify_snapshot(&snapshot).expect("safe relative symlink target should verify");
+    }
+
+    #[test]
     fn verify_missing_file_returns_io_error_variant() {
         let path = Path::new("/nonexistent/path/snapshot.gcl");
         let err = verify_snapshot(path).expect_err("verify should fail for missing file");

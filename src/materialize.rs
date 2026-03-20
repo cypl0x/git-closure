@@ -41,7 +41,25 @@ pub fn verify_snapshot(snapshot: &Path) -> Result<VerifyReport> {
     for file in &files {
         let _ = sanitized_relative_path(&file.path)?;
 
-        if file.symlink_target.is_some() {
+        if let Some(target) = &file.symlink_target {
+            let synthetic_root = PathBuf::from("/gcl-verify-root");
+            let entry_parent = synthetic_root.join(
+                Path::new(&file.path)
+                    .parent()
+                    .unwrap_or_else(|| Path::new("")),
+            );
+            let effective_target = if Path::new(target).is_absolute() {
+                Path::new(target).to_path_buf()
+            } else {
+                entry_parent.join(target)
+            };
+            let normalized = lexical_normalize(&effective_target)?;
+            if !normalized.starts_with(&synthetic_root) {
+                return Err(GitClosureError::UnsafePath(format!(
+                    "symlink target would escape output root for {}: {}",
+                    file.path, target
+                )));
+            }
             continue;
         }
 
