@@ -1,0 +1,3 @@
+bin.name = "git-closure"
+args = ["summary", "single.gcl", "--json"]
+status = "success"

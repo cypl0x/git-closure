@@ -1,0 +1,15 @@
+{
+  "snapshot_hash": "7966501418894b02de5440687eda89c8ef807eee3536217f5037aecfefa8c9e3",
+  "file_count": 1,
+  "regular_count": 1,
+  "symlink_count": 0,
+  "total_bytes": 1,
+  "git_rev": null,
+  "git_branch": null,
+  "largest_files": [
+    [
+      "x.txt",
+      1
+    ]
+  ]
+}

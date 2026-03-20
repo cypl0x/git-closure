@@ -7,8 +7,9 @@ use serde::Serialize;
 
 use git_closure::{
     build_snapshot_from_source, diff_snapshot_to_source, diff_snapshots, fmt_snapshot_with_options,
-    list_snapshot, materialize_snapshot, providers::ProviderKind, render_snapshot, verify_snapshot,
-    BuildOptions, DiffEntry, FmtOptions, GitClosureError, ListEntry, RenderFormat,
+    list_snapshot, materialize_snapshot, providers::ProviderKind, render_snapshot,
+    summarize_snapshot, verify_snapshot, BuildOptions, DiffEntry, FmtOptions, GitClosureError,
+    ListEntry, RenderFormat, SnapshotSummary,
 };
 
 #[derive(Parser, Debug)]
@@ -98,6 +99,13 @@ enum Commands {
         format: ReportFormat,
         #[arg(short, long, help = "Write output to file instead of stdout")]
         output: Option<PathBuf>,
+    },
+    #[command(about = "Print compact snapshot metadata", visible_alias = "s")]
+    Summary {
+        #[arg(help = "Snapshot file to summarize")]
+        snapshot: PathBuf,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
     },
     #[command(about = "Generate shell completion scripts", visible_alias = "c")]
     Completion {
@@ -269,6 +277,14 @@ fn run() -> Result<(), GitClosureError> {
                 std::fs::write(path, rendered.as_bytes())?;
             } else {
                 print!("{rendered}");
+            }
+        }
+        Commands::Summary { snapshot, json } => {
+            let summary = summarize_snapshot(&snapshot)?;
+            if json {
+                println!("{}", summary_json(&summary));
+            } else {
+                print_summary(&summary);
             }
         }
         Commands::Completion { shell } => {
@@ -476,6 +492,34 @@ fn list_entries_json(entries: &[ListEntry], long: bool) -> String {
     }
 }
 
+fn print_summary(summary: &SnapshotSummary) {
+    println!("snapshot_hash: {}", summary.snapshot_hash);
+    println!("file_count: {}", summary.file_count);
+    println!("regular_count: {}", summary.regular_count);
+    println!("symlink_count: {}", summary.symlink_count);
+    println!("total_bytes: {}", summary.total_bytes);
+    println!(
+        "git_rev: {}",
+        summary.git_rev.as_deref().unwrap_or("(none)")
+    );
+    println!(
+        "git_branch: {}",
+        summary.git_branch.as_deref().unwrap_or("(none)")
+    );
+    if summary.largest_files.is_empty() {
+        println!("largest_files: (none)");
+        return;
+    }
+    println!("largest_files:");
+    for (path, size) in &summary.largest_files {
+        println!("  - {path}\t{size}");
+    }
+}
+
+fn summary_json(summary: &SnapshotSummary) -> String {
+    serde_json::to_string_pretty(summary).expect("serialize summary JSON")
+}
+
 // ── Output filename derivation (T-31) ─────────────────────────────────────────
 
 /// Derives a default output path for the `build` command when `--output` is
@@ -543,8 +587,8 @@ fn print_completion(shell: CompletionShell) {
 
 #[cfg(test)]
 mod tests {
-    use super::{derive_output_path, diff_entries_json, list_entries_json};
-    use git_closure::{DiffEntry, ListEntry};
+    use super::{derive_output_path, diff_entries_json, list_entries_json, summary_json};
+    use git_closure::{DiffEntry, ListEntry, SnapshotSummary};
     use serde_json::Value;
     use std::path::PathBuf;
     use std::sync::Mutex;
@@ -696,5 +740,23 @@ mod tests {
         let file = dir.path().join("snap.gcl");
         std::fs::write(&file, "").expect("create file");
         assert!(!super::should_diff_against_source(&file));
+    }
+
+    #[test]
+    fn summary_json_round_trips_with_serde_json() {
+        let summary = SnapshotSummary {
+            snapshot_hash: "abc123".to_string(),
+            file_count: 3,
+            regular_count: 2,
+            symlink_count: 1,
+            total_bytes: 11,
+            git_rev: Some("deadbeef".to_string()),
+            git_branch: Some("main".to_string()),
+            largest_files: vec![("a.txt".to_string(), 6), ("b.txt".to_string(), 5)],
+        };
+        let json = summary_json(&summary);
+        let value: Value = serde_json::from_str(&json).expect("summary JSON must parse");
+        assert_eq!(value["file_count"], Value::from(3));
+        assert_eq!(value["largest_files"][0][0], Value::from("a.txt"));
     }
 }

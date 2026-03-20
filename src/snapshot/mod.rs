@@ -6,6 +6,7 @@ pub mod diff;
 pub mod hash;
 pub mod render;
 pub mod serial;
+pub mod summary;
 
 use crate::error::GitClosureError;
 
@@ -79,4 +80,17 @@ pub struct ListEntry {
     pub mode: String,
     /// Byte size of file content (0 for symlinks).
     pub size: u64,
+}
+
+/// Aggregated metadata derived from a snapshot file.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct SnapshotSummary {
+    pub snapshot_hash: String,
+    pub file_count: usize,
+    pub regular_count: usize,
+    pub symlink_count: usize,
+    pub total_bytes: u64,
+    pub git_rev: Option<String>,
+    pub git_branch: Option<String>,
+    pub largest_files: Vec<(String, u64)>,
 }

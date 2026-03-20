@@ -18,6 +18,7 @@
 //! | [`list_snapshot`] | List snapshot entries from a file path |
 //! | [`list_snapshot_str`] | List snapshot entries from in-memory text |
 //! | [`parse_snapshot`] | Parse in-memory snapshot text into header + entries |
+//! | [`summarize_snapshot`] | Compute aggregate snapshot metadata |
 //!
 //! | Type | Description |
 //! |---|---|
@@ -31,6 +32,7 @@
 //! | [`DiffResult`] | Deterministic diff output container |
 //! | [`RenderFormat`] | Output selector for [`render_snapshot`] |
 //! | [`FmtOptions`] | Formatting behavior options |
+//! | [`SnapshotSummary`] | Compact snapshot metadata summary |
 
 // ── Module declarations ───────────────────────────────────────────────────────
 
@@ -56,7 +58,10 @@ pub use snapshot::serial::{
     fmt_snapshot, fmt_snapshot_with_options, list_snapshot, list_snapshot_str, parse_snapshot,
     FmtOptions,
 };
-pub use snapshot::{BuildOptions, ListEntry, SnapshotFile, SnapshotHeader, VerifyReport};
+pub use snapshot::summary::summarize_snapshot;
+pub use snapshot::{
+    BuildOptions, ListEntry, SnapshotFile, SnapshotHeader, SnapshotSummary, VerifyReport,
+};
 
 #[doc(hidden)]
 pub fn fuzz_parse_snapshot(input: &str) {
@@ -922,6 +927,29 @@ mod tests {
     }
 
     #[test]
+    fn summarize_snapshot_reports_expected_counts() {
+        let source = TempDir::new().expect("create source tempdir");
+        fs::write(source.path().join("a.txt"), b"alpha\n").expect("write a.txt");
+        fs::create_dir_all(source.path().join("sub")).expect("create subdir");
+        fs::write(source.path().join("sub/b.txt"), b"beta\n").expect("write b.txt");
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("a.txt", source.path().join("link")).expect("create symlink");
+
+        let snapshot = source.path().join("snapshot.gcl");
+        build_snapshot(source.path(), &snapshot).expect("build snapshot");
+
+        let summary = crate::summarize_snapshot(&snapshot).expect("summarize snapshot");
+        assert_eq!(summary.file_count, 3);
+        assert_eq!(summary.regular_count, 2);
+        assert_eq!(summary.symlink_count, 1);
+        assert_eq!(summary.total_bytes, 11);
+        assert_eq!(summary.largest_files.len(), 2);
+        assert_eq!(summary.largest_files[0].0, "a.txt");
+        assert_eq!(summary.largest_files[0].1, 6);
+    }
+
+    #[test]
     fn git_mode_excludes_untracked_by_default() {
         let repo = TempDir::new().expect("create temp repo");
         init_git_repo(repo.path());
@@ -1377,12 +1405,14 @@ mod tests {
             "[`FmtOptions`]",
             "[`parse_snapshot`]",
             "[`list_snapshot_str`]",
+            "[`summarize_snapshot`]",
             "[`GitClosureError`]",
             "[`BuildOptions`]",
             "[`VerifyReport`]",
             "[`ListEntry`]",
             "[`SnapshotHeader`]",
             "[`SnapshotFile`]",
+            "[`SnapshotSummary`]",
         ] {
             assert!(
                 crate_docs.contains(symbol),

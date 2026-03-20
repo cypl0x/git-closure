@@ -12,6 +12,7 @@ Commands:
   diff         Compare two snapshots and show differences [aliases: d]
   fmt          Canonically reformat a snapshot file [aliases: f]
   render       Render a snapshot as a Markdown, HTML, or JSON audit report [aliases: r]
+  summary      Print compact snapshot metadata [aliases: s]
   completion   Generate shell completion scripts [aliases: c]
   help         Print this message or the help of the given subcommand(s)
 
