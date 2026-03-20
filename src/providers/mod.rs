@@ -235,7 +235,7 @@ impl Provider for GitCloneProvider {
             return Err(GitClosureError::CommandExitFailure {
                 command: "git",
                 status: clone_output.status.to_string(),
-                stderr: truncate_stderr(&clone_output.stderr),
+                stderr: annotate_git_clone_stderr("clone failed", &clone_output.stderr),
             });
         }
 
@@ -258,7 +258,10 @@ impl Provider for GitCloneProvider {
                 return Err(GitClosureError::CommandExitFailure {
                     command: "git",
                     status: fetch_output.status.to_string(),
-                    stderr: truncate_stderr(&fetch_output.stderr),
+                    stderr: annotate_git_clone_stderr(
+                        "reference fetch failed",
+                        &fetch_output.stderr,
+                    ),
                 });
             }
 
@@ -272,13 +275,18 @@ impl Provider for GitCloneProvider {
                 return Err(GitClosureError::CommandExitFailure {
                     command: "git",
                     status: checkout_output.status.to_string(),
-                    stderr: truncate_stderr(&checkout_output.stderr),
+                    stderr: annotate_git_clone_stderr("checkout failed", &checkout_output.stderr),
                 });
             }
         }
 
         Ok(FetchedSource::temporary(checkout, tempdir))
     }
+}
+
+fn annotate_git_clone_stderr(stage: &str, stderr: &[u8]) -> String {
+    let detail = truncate_stderr(stderr);
+    format!("git-clone: {stage}: {detail}")
 }
 
 pub struct NixProvider;
@@ -765,10 +773,10 @@ pub(crate) fn run_command_status(
 #[cfg(test)]
 mod tests {
     use super::{
-        choose_provider, fetch_source, github_api_status_error, parse_git_source,
-        parse_github_api_source, parse_nix_metadata_path, run_command_output, run_command_status,
-        split_repo_ref, strip_github_archive_prefix, GitCloneProvider, NixProvider,
-        ParsedGithubApiSource, Provider, ProviderKind, SourceSpec,
+        annotate_git_clone_stderr, choose_provider, fetch_source, github_api_status_error,
+        parse_git_source, parse_github_api_source, parse_nix_metadata_path, run_command_output,
+        run_command_status, split_repo_ref, strip_github_archive_prefix, GitCloneProvider,
+        NixProvider, ParsedGithubApiSource, Provider, ProviderKind, SourceSpec,
     };
     use crate::error::GitClosureError;
     use crate::utils::truncate_stderr;
@@ -939,9 +947,29 @@ mod tests {
             } => {
                 assert_eq!(command, "git");
                 assert!(!stderr.is_empty(), "stderr payload should be captured");
+                assert!(
+                    stderr.contains("git-clone: clone failed:"),
+                    "stderr payload should include clone step context"
+                );
             }
             other => panic!("expected CommandExitFailure, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn git_clone_failure_prefixes_include_operation_context() {
+        assert_eq!(
+            annotate_git_clone_stderr("clone failed", b"fatal: bad url"),
+            "git-clone: clone failed: fatal: bad url"
+        );
+        assert_eq!(
+            annotate_git_clone_stderr("reference fetch failed", b"fatal: no such ref"),
+            "git-clone: reference fetch failed: fatal: no such ref"
+        );
+        assert_eq!(
+            annotate_git_clone_stderr("checkout failed", b"fatal: checkout failed"),
+            "git-clone: checkout failed: fatal: checkout failed"
+        );
     }
 
     #[test]
