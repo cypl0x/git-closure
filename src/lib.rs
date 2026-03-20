@@ -612,6 +612,50 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn materialize_rejects_symlink_pivot_escape() {
+        let temp = TempDir::new().expect("create tempdir");
+        let snapshot = temp.path().join("symlink-pivot.gcl");
+        let output = temp.path().join("out");
+
+        let payload = b"owned\n";
+        let payload_sha = crate::snapshot::hash::sha256_hex(payload);
+        let files = vec![
+            SnapshotFile {
+                path: "a".to_string(),
+                sha256: String::new(),
+                mode: "120000".to_string(),
+                size: 0,
+                encoding: None,
+                symlink_target: Some("nested".to_string()),
+                content: Vec::new(),
+            },
+            SnapshotFile {
+                path: "a/payload.txt".to_string(),
+                sha256: payload_sha.clone(),
+                mode: "644".to_string(),
+                size: payload.len() as u64,
+                encoding: None,
+                symlink_target: None,
+                content: payload.to_vec(),
+            },
+        ];
+        let snapshot_hash = compute_snapshot_hash(&files);
+        let snapshot_text = format!(
+            ";; git-closure snapshot v0.1\n;; snapshot-hash: {snapshot_hash}\n;; file-count: 2\n\n(\n  ((:path \"a\" :type \"symlink\" :target \"nested\") \"\")\n  ((:path \"a/payload.txt\" :sha256 \"{payload_sha}\" :mode \"644\" :size {}) \"owned\\n\")\n)\n",
+            payload.len()
+        );
+        fs::write(&snapshot, snapshot_text).expect("write snapshot");
+
+        let err = materialize_snapshot(&snapshot, &output)
+            .expect_err("materialize must reject writing through snapshot-created symlink");
+        assert!(
+            matches!(err, GitClosureError::UnsafePath(_)),
+            "expected UnsafePath, got {err:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn materialize_rejects_absolute_symlink_target_outside_output() {
         let temp = TempDir::new().expect("create tempdir");
         let snapshot = temp.path().join("escape.gcl");

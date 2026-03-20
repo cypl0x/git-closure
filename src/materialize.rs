@@ -11,7 +11,9 @@ use crate::error::GitClosureError;
 use crate::snapshot::hash::{compute_snapshot_hash, sha256_hex};
 use crate::snapshot::serial::parse_snapshot;
 use crate::snapshot::{Result, VerifyReport};
-use crate::utils::{io_error_with_path, lexical_normalize};
+use crate::utils::{
+    ensure_no_symlink_ancestors, io_error_with_path, lexical_normalize, reject_if_symlink,
+};
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -122,6 +124,7 @@ pub fn materialize_snapshot(snapshot: &Path, output: &Path) -> Result<()> {
         }
 
         if let Some(parent) = destination.parent() {
+            ensure_no_symlink_ancestors(&output_abs, parent)?;
             fs::create_dir_all(parent).map_err(|err| io_error_with_path(err, parent))?;
         }
 
@@ -142,6 +145,7 @@ pub fn materialize_snapshot(snapshot: &Path, output: &Path) -> Result<()> {
                     file.path, target
                 )));
             }
+            reject_if_symlink(&destination)?;
             symlink(target_path, &destination)?;
             continue;
         }
@@ -155,6 +159,7 @@ pub fn materialize_snapshot(snapshot: &Path, output: &Path) -> Result<()> {
             });
         }
 
+        ensure_no_symlink_ancestors(&output_abs, &destination)?;
         fs::write(&destination, &file.content)
             .map_err(|err| io_error_with_path(err, &destination))?;
 
