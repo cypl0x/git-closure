@@ -355,6 +355,24 @@ fn parse_files_value(
 
         let path = path.ok_or_else(|| GitClosureError::Parse("missing :path".to_string()))?;
         if entry_type.as_deref() == Some("symlink") {
+            if sha256.as_deref().map(|s| !s.is_empty()).unwrap_or(false) {
+                return Err(GitClosureError::Parse(format!(
+                    "symlink entry {} has unexpected :sha256 field",
+                    path
+                )));
+            }
+            if size.map(|s| s != 0).unwrap_or(false) {
+                return Err(GitClosureError::Parse(format!(
+                    "symlink entry {} has unexpected non-zero :size",
+                    path
+                )));
+            }
+            if encoding.is_some() {
+                return Err(GitClosureError::Parse(format!(
+                    "symlink entry {} has unexpected :encoding field",
+                    path
+                )));
+            }
             let target = target
                 .ok_or_else(|| GitClosureError::Parse("missing :target for symlink".to_string()))?;
             files.push(SnapshotFile {
@@ -803,6 +821,49 @@ mod tests {
         };
         let err = parse_snapshot_with_limits(&text, Some(&limits))
             .expect_err("total bytes limit must reject oversized aggregate");
+        assert!(matches!(err, GitClosureError::Parse(_)));
+    }
+
+    #[test]
+    fn parse_snapshot_rejects_symlink_with_nonempty_sha256() {
+        let files = vec![SnapshotFile {
+            path: "link".to_string(),
+            sha256: String::new(),
+            mode: "120000".to_string(),
+            size: 0,
+            encoding: None,
+            symlink_target: Some("target.txt".to_string()),
+            content: Vec::new(),
+        }];
+        let header = make_header(&files);
+        let text = serialize_snapshot(&files, &header);
+        let modified = text.replace(
+            ":type \"symlink\"",
+            ":sha256 \"deadbeef\"\n     :type \"symlink\"",
+        );
+
+        let err = parse_snapshot(&modified)
+            .expect_err("symlink entries must reject non-empty sha256 field");
+        assert!(matches!(err, GitClosureError::Parse(_)));
+    }
+
+    #[test]
+    fn parse_snapshot_rejects_symlink_with_nonzero_size() {
+        let files = vec![SnapshotFile {
+            path: "link".to_string(),
+            sha256: String::new(),
+            mode: "120000".to_string(),
+            size: 0,
+            encoding: None,
+            symlink_target: Some("target.txt".to_string()),
+            content: Vec::new(),
+        }];
+        let header = make_header(&files);
+        let text = serialize_snapshot(&files, &header);
+        let modified = text.replace(":type \"symlink\"", ":size 1\n     :type \"symlink\"");
+
+        let err =
+            parse_snapshot(&modified).expect_err("symlink entries must reject non-zero size field");
         assert!(matches!(err, GitClosureError::Parse(_)));
     }
 
