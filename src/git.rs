@@ -3,6 +3,7 @@
 /// This module wraps the git CLI to collect the set of files that belong to a
 /// snapshot.  All git interaction goes through `run_command_output` from the
 /// providers layer — the binary is assumed to be on `PATH`.
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::error::GitClosureError;
@@ -38,7 +39,8 @@ impl GitRepoContext {
             })?
             .trim()
             .to_string();
-        let workdir = PathBuf::from(workdir);
+        let workdir = fs::canonicalize(PathBuf::from(workdir))?;
+        let source = fs::canonicalize(source)?;
 
         if !source.starts_with(&workdir) {
             return Ok(None);
@@ -328,10 +330,31 @@ mod tests {
         init_git_repo(repo.path());
         fs::create_dir_all(repo.path().join("src")).expect("create src directory");
 
-        let source = repo.path().join("src");
+        let source = fs::canonicalize(repo.path().join("src")).expect("canonicalize source path");
         let discovered = GitRepoContext::discover(&source)
             .expect("discover should not error")
             .expect("repo context should be found");
+
+        let expected_workdir = fs::canonicalize(repo.path()).expect("canonicalize repo path");
+        assert_eq!(discovered.workdir, expected_workdir);
+        assert_eq!(discovered.source_prefix, PathBuf::from("src"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discover_returns_context_for_symlinked_repo_path() {
+        let repo = tempfile::TempDir::new().expect("create tempdir");
+        let alias_root = tempfile::TempDir::new().expect("create alias tempdir");
+        init_git_repo(repo.path());
+        fs::create_dir_all(repo.path().join("src")).expect("create src directory");
+
+        let alias = alias_root.path().join("repo-link");
+        std::os::unix::fs::symlink(repo.path(), &alias).expect("create repo symlink");
+        let source = alias.join("src");
+
+        let discovered = GitRepoContext::discover(&source)
+            .expect("discover should not error")
+            .expect("repo context should be found through symlink alias");
 
         let expected_workdir = fs::canonicalize(repo.path()).expect("canonicalize repo path");
         assert_eq!(discovered.workdir, expected_workdir);
@@ -346,7 +369,8 @@ mod tests {
         run_git(repo.path(), &["add", "tracked.txt"]);
         run_git(repo.path(), &["commit", "-m", "initial"]);
 
-        let context = GitRepoContext::discover(repo.path())
+        let source = fs::canonicalize(repo.path()).expect("canonicalize repo path");
+        let context = GitRepoContext::discover(&source)
             .expect("discover should not error")
             .expect("repo context should exist");
         let tracked = tracked_paths_from_index(&context).expect("list tracked paths");
@@ -365,7 +389,8 @@ mod tests {
         fs::write(repo.path().join("new.txt"), b"new\n").expect("write new file");
         fs::write(repo.path().join("ignored.txt"), b"ignored\n").expect("write ignored file");
 
-        let context = GitRepoContext::discover(repo.path())
+        let source = fs::canonicalize(repo.path()).expect("canonicalize repo path");
+        let context = GitRepoContext::discover(&source)
             .expect("discover should not error")
             .expect("repo context should exist");
         let untracked = untracked_paths_from_status(&context).expect("list untracked paths");
