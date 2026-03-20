@@ -67,19 +67,21 @@ pub(crate) fn serialize_snapshot(files: &[SnapshotFile], header: &SnapshotHeader
         }
         output.push_str(")\n");
 
-        let content_string = if file.encoding.as_deref() == Some("base64") {
-            BASE64_STANDARD.encode(&file.content)
+        let quoted_content = if file.encoding.as_deref() == Some("base64") {
+            quote_string(&BASE64_STANDARD.encode(&file.content))
         } else {
             // INVARIANT: files without base64 encoding were validated as valid UTF-8
             // during collection via `std::str::from_utf8` in collect_file_attributes.
             // `from_utf8_lossy` would silently corrupt data by substituting U+FFFD —
             // an undetectable data-loss bug.  Panic loudly instead so the invariant
             // violation is surfaced immediately during development/testing.
-            String::from_utf8(file.content.clone())
-                .expect("non-base64 file content must be valid UTF-8 (invariant violated)")
+            quote_string(
+                std::str::from_utf8(&file.content)
+                    .expect("non-base64 file content must be valid UTF-8 (invariant violated)"),
+            )
         };
 
-        output.push_str(&quote_string(&content_string));
+        output.push_str(&quoted_content);
         output.push('\n');
         output.push_str("  )\n");
     }
@@ -1073,6 +1075,16 @@ mod tests {
         assert!(
             !repaired.contains("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"),
             "repaired output must contain a recomputed hash"
+        );
+    }
+
+    #[test]
+    fn serialize_snapshot_avoids_content_clone_in_utf8_path() {
+        let source = include_str!("serial.rs");
+        let needle = ["String::from_utf8(", "file.content.clone()", ")"].join("");
+        assert!(
+            !source.contains(&needle),
+            "utf8 serialization path should avoid cloning file.content"
         );
     }
 
