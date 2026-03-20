@@ -19,6 +19,7 @@
 //! | [`list_snapshot`] | List snapshot entries from a file path |
 //! | [`list_snapshot_str`] | List snapshot entries from in-memory text |
 //! | [`parse_snapshot`] | Parse in-memory snapshot text into header + entries |
+//! | [`parse_snapshot_with_limits`] | Parse snapshot text with resource limits for untrusted input |
 //! | [`summarize_snapshot`] | Compute aggregate snapshot metadata |
 //!
 //! | Type | Description |
@@ -35,6 +36,7 @@
 //! | [`DiffResult`] | Deterministic diff output container |
 //! | [`RenderFormat`] | Output selector for [`render_snapshot`] |
 //! | [`FmtOptions`] | Formatting behavior options |
+//! | [`ParseLimits`] | Resource limits applied during bounded snapshot parsing |
 //! | [`SnapshotSummary`] | Compact snapshot metadata summary |
 
 // ── Module declarations ───────────────────────────────────────────────────────
@@ -62,7 +64,7 @@ pub use snapshot::diff::{diff_snapshot_to_source, diff_snapshots, DiffEntry, Dif
 pub use snapshot::render::{render_snapshot, RenderFormat};
 pub use snapshot::serial::{
     fmt_snapshot, fmt_snapshot_with_options, list_snapshot, list_snapshot_str, parse_snapshot,
-    FmtOptions,
+    parse_snapshot_with_limits, FmtOptions, ParseLimits,
 };
 pub use snapshot::summary::summarize_snapshot;
 pub use snapshot::{
@@ -1411,6 +1413,7 @@ mod tests {
             "[`RenderFormat`]",
             "[`FmtOptions`]",
             "[`parse_snapshot`]",
+            "[`parse_snapshot_with_limits`]",
             "[`list_snapshot_str`]",
             "[`summarize_snapshot`]",
             "[`GitClosureError`]",
@@ -1422,12 +1425,55 @@ mod tests {
             "[`SnapshotHeader`]",
             "[`SnapshotFile`]",
             "[`SnapshotSummary`]",
+            "[`ParseLimits`]",
         ] {
             assert!(
                 crate_docs.contains(symbol),
                 "crate-level Public API table should include {symbol}"
             );
         }
+    }
+
+    #[test]
+    fn parse_snapshot_with_limits_is_usable_from_public_api() {
+        let project = TempDir::new().expect("create external project tempdir");
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+
+        let cargo_toml = format!(
+            "[package]\nname = \"api-smoke\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ngit-closure = {{ path = \"{}\" }}\n",
+            manifest_dir.display()
+        );
+        fs::write(project.path().join("Cargo.toml"), cargo_toml).expect("write Cargo.toml");
+
+        let src_dir = project.path().join("src");
+        fs::create_dir_all(&src_dir).expect("create src directory");
+        let main_rs = r#"use git_closure::{parse_snapshot_with_limits, ParseLimits};
+
+fn main() {
+    let limits = ParseLimits {
+        max_entry_count: Some(16),
+        max_file_bytes: Some(1024),
+        max_total_bytes: Some(4096),
+    };
+    let input = ";; git-closure snapshot v0.1\n;; snapshot-hash: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n;; file-count: 0\n\n()\n";
+    let _ = parse_snapshot_with_limits(input, Some(&limits));
+}
+"#;
+        fs::write(src_dir.join("main.rs"), main_rs).expect("write main.rs");
+
+        let output = Command::new("cargo")
+            .arg("check")
+            .arg("--quiet")
+            .current_dir(project.path())
+            .output()
+            .expect("run cargo check in external project");
+
+        assert!(
+            output.status.success(),
+            "public API smoke-check failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]
