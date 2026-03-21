@@ -54,6 +54,7 @@ pub mod ir;
 pub mod nar;
 pub mod providers;
 
+pub(crate) mod backends;
 pub(crate) mod git;
 pub(crate) mod materialize;
 pub(crate) mod snapshot;
