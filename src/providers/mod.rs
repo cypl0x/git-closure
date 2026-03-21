@@ -794,6 +794,17 @@ mod tests {
     use std::sync::Mutex;
     use std::time::Duration;
 
+    // Env-var isolation guards for GCL_GITHUB_TARBALL_MAX_BYTES.
+    //
+    // NOTE: The limit-testing tests (rejects_content_length_over_limit,
+    // rejects_stream_over_limit) no longer use env mutation - they pass
+    // max_bytes directly via the explicit parameter added in RP-24. These
+    // guards exist to provide unwind-safe cleanup in the two RAII regression
+    // tests below, and to guard any future code that reintroduces env-var-based
+    // limit reading.
+    //
+    // If GCL_GITHUB_TARBALL_MAX_BYTES is removed from the codebase entirely,
+    // these guards and their tests can also be removed.
     static TARBALL_LIMIT_ENV_LOCK: Mutex<()> = Mutex::new(());
     const TARBALL_LIMIT_ENV: &str = "GCL_GITHUB_TARBALL_MAX_BYTES";
 
@@ -884,8 +895,8 @@ mod tests {
 
     #[test]
     fn tarball_limit_env_override_restores_previous_value_on_drop() {
-        // Regression test: verifies TarballLimitEnvOverride cleanup semantics,
-        // even though production limit tests now pass explicit max_bytes values.
+        // Regression test: verifies TarballLimitEnvOverride cleans up on normal drop,
+        // even though production tests now pass explicit max_bytes parameters.
         let _restore = TarballLimitEnvRestore::capture();
         let _env_guard = lock_tarball_limit_env();
         std::env::remove_var(TARBALL_LIMIT_ENV);
@@ -905,8 +916,8 @@ mod tests {
 
     #[test]
     fn tarball_limit_env_override_restores_previous_value_after_panic() {
-        // Regression test: verifies TarballLimitEnvOverride cleanup semantics,
-        // even though production limit tests now pass explicit max_bytes values.
+        // Regression test: verifies TarballLimitEnvOverride cleans up on unwind,
+        // even though production tests now pass explicit max_bytes parameters.
         let _restore = TarballLimitEnvRestore::capture();
         let _env_guard = lock_tarball_limit_env();
         std::env::remove_var(TARBALL_LIMIT_ENV);
