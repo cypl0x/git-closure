@@ -45,13 +45,17 @@ fn compile_local_source_produces_gcl_artifact() {
 
     assert!(output.exists());
 
-    // Parse the emitted .gcl and assert the expected file entry is present.
+    // Parse the emitted .gcl and assert the expected file entry is present
+    // with the correct content — stronger than a substring check.
     let text = std::fs::read_to_string(&output).unwrap();
     let (_header, files) = parse_snapshot(&text).expect("compile output must be valid .gcl");
-    assert!(
-        files.iter().any(|f| f.path == "hello.txt"),
-        "expected hello.txt in compile output; got: {:?}",
-        files.iter().map(|f| &f.path).collect::<Vec<_>>()
+    let entry = files
+        .iter()
+        .find(|f| f.path == "hello.txt")
+        .expect("hello.txt must appear as a parsed file entry in the .gcl output");
+    assert_eq!(
+        entry.content, b"hello world\n",
+        "file content must round-trip through the compile path unchanged"
     );
 }
 
