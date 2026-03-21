@@ -22,6 +22,19 @@ fn source_spec_accessible_from_both_public_paths() {
     assert_eq!(via_source, via_providers);
 }
 
+// ── Post-Phase-4: Provider trait reachable via providers:: ────────────────────
+
+#[test]
+fn provider_trait_reachable_via_providers_path() {
+    use git_closure::providers::{LocalProvider, Provider};
+
+    // Monomorphisation probe: the compiler must resolve Provider as a trait and
+    // LocalProvider as a conforming type at their public paths.  If either
+    // re-export is dropped, this fails to compile.
+    fn assert_provider_impl<T: Provider>() {}
+    assert_provider_impl::<LocalProvider>();
+}
+
 // ── Commit 2: concrete provider structs still reachable via providers:: ────────
 
 #[test]
