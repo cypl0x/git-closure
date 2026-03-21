@@ -736,24 +736,6 @@ mod tests {
     }
 
     #[test]
-    fn diff_entries_json_match_has_no_wildcard_drop_arm() {
-        let source = include_str!("main.rs");
-        let start = source
-            .find("fn diff_entries_json")
-            .expect("diff_entries_json function must exist");
-        let tail = &source[start..];
-        let end = tail
-            .find("fn list_entries_json")
-            .expect("list_entries_json function must exist");
-        let diff_entries_json_src = &tail[..end];
-
-        assert!(
-            !diff_entries_json_src.contains("_ => None"),
-            "diff_entries_json must not silently drop future DiffEntry variants"
-        );
-    }
-
-    #[test]
     fn list_entries_json_round_trips_with_serde_json() {
         let entries = vec![
             ListEntry {

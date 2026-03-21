@@ -526,12 +526,19 @@ mod tests {
     }
 
     #[test]
-    fn source_annotation_uses_shared_provider_dispatch() {
-        let source = include_str!("build.rs");
-        let legacy_selector = ["fn ", "selected_provider_kind", "("].join("");
-        assert!(
-            source.contains("choose_provider(") && !source.contains(&legacy_selector),
-            "source annotation should delegate provider selection to providers::choose_provider"
+    fn source_annotation_for_source_respects_auto_and_explicit_providers() {
+        let auto = source_annotation_for_source("gh:owner/repo", ProviderKind::Auto)
+            .expect("auto provider annotation should resolve");
+        assert_eq!(
+            auto,
+            Some(("gh:owner/repo".to_string(), "github-api".to_string()))
+        );
+
+        let explicit = source_annotation_for_source("gh:owner/repo", ProviderKind::GitClone)
+            .expect("explicit provider annotation should resolve");
+        assert_eq!(
+            explicit,
+            Some(("gh:owner/repo".to_string(), "git-clone".to_string()))
         );
     }
 
