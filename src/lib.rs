@@ -105,7 +105,9 @@ mod tests {
         build_snapshot, build_snapshot_from_provider, build_snapshot_with_options,
     };
     use crate::snapshot::hash::compute_snapshot_hash;
+    use crate::snapshot::serial::parse_snapshot;
     use crate::snapshot::{BuildOptions, SnapshotFile, SnapshotHeader};
+    use std::collections::HashSet;
     use std::fs;
     use std::io::Write;
     use std::path::{Path, PathBuf};
@@ -1392,6 +1394,20 @@ mod tests {
         panic!("missing snapshot hash header");
     }
 
+    fn collect_gcl_files(root: &Path, out: &mut Vec<PathBuf>) {
+        let entries = fs::read_dir(root).expect("read fixture directory");
+        for entry in entries {
+            let entry = entry.expect("read fixture entry");
+            let path = entry.path();
+            let file_type = entry.file_type().expect("read fixture file type");
+            if file_type.is_dir() {
+                collect_gcl_files(&path, out);
+            } else if path.extension().and_then(|ext| ext.to_str()) == Some("gcl") {
+                out.push(path);
+            }
+        }
+    }
+
     #[cfg(unix)]
     fn symlink_snapshot_hash(path: &str, target: &str) -> String {
         use sha2::{Digest, Sha256};
@@ -1590,6 +1606,74 @@ fn main() {
             "public API smoke-check failed\nstdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn cli_fixtures_do_not_use_placeholder_snapshot_hashes() {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let root = manifest_dir.join("tests/cli");
+        let mut fixture_files = Vec::new();
+        collect_gcl_files(&root, &mut fixture_files);
+        fixture_files.sort();
+
+        let mut allow_mismatched_hash: HashSet<PathBuf> = [
+            PathBuf::from("tests/cli/fmt-check-hash-mismatch.in/hash-mismatch.gcl"),
+            PathBuf::from("tests/cli/fmt-repair-hash.in/hash-mismatch.gcl"),
+        ]
+        .into_iter()
+        .collect();
+
+        let mut allow_parse_error: HashSet<PathBuf> = [
+            PathBuf::from("tests/cli/fmt-check-parse-error.in/bad.gcl"),
+            PathBuf::from("tests/cli/list-long-malformed-sha.in/bad.gcl"),
+            PathBuf::from("tests/cli/render-markdown-malformed-sha.in/bad.gcl"),
+        ]
+        .into_iter()
+        .collect();
+
+        for path in fixture_files {
+            let relative = path
+                .strip_prefix(&manifest_dir)
+                .expect("fixture should be under manifest dir")
+                .to_path_buf();
+            let text = fs::read_to_string(&path).expect("read .gcl fixture");
+            match parse_snapshot(&text) {
+                Ok((header, files)) => {
+                    let computed = compute_snapshot_hash(&files);
+                    if allow_mismatched_hash.remove(&relative) {
+                        assert_ne!(
+                            header.snapshot_hash,
+                            computed,
+                            "allow-listed mismatch fixture unexpectedly has matching hash ({})",
+                            relative.display()
+                        );
+                    } else {
+                        assert_eq!(
+                            header.snapshot_hash,
+                            computed,
+                            "fixture snapshot-hash must match computed value ({})",
+                            relative.display()
+                        );
+                    }
+                }
+                Err(err) => {
+                    assert!(
+                        allow_parse_error.remove(&relative),
+                        "fixture should parse and hash-check unless explicitly allow-listed ({}) - parse error: {err}",
+                        relative.display()
+                    );
+                }
+            }
+        }
+
+        assert!(
+            allow_mismatched_hash.is_empty(),
+            "allow-list contains non-existent mismatch fixture entries: {allow_mismatched_hash:?}"
+        );
+        assert!(
+            allow_parse_error.is_empty(),
+            "allow-list contains non-existent parse-error fixture entries: {allow_parse_error:?}"
         );
     }
 
