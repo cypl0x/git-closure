@@ -183,7 +183,10 @@ git-closure diff old.gcl ./src
   not match recomputed structure
 - `--repair-hash` explicitly opts into hash repair/re-canonicalization
 
-`fmt --check` exit behavior is split by condition (see Exit Codes).
+`fmt --check` exit behavior:
+
+- exit `1` when the snapshot is valid but noncanonical
+- exit `4` when the snapshot is malformed or has an integrity mismatch
 
 ## render Formats
 
@@ -217,9 +220,8 @@ Symlink rendering policy:
 
 - `0` - success / no semantic differences
 - `1` - semantic negative result (`diff` differences, `fmt --check` noncanonical-valid)
-- `2` - integrity mismatch (`fmt --check` hash mismatch)
-- `3` - parse failure (`fmt --check` parse error)
-- `4` - operational/runtime failure (I/O, provider/subprocess, usage/runtime errors)
+- `2` - invalid invocation (unknown subcommand, bad argument values)
+- `4` - operational/runtime failure (I/O, provider/subprocess, parse/hash validation errors)
 
 ## CI Contract
 

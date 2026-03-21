@@ -1,0 +1,3 @@
+bin.name = "git-closure"
+args = ["completion", "fish"]
+status.code = 2

@@ -241,7 +241,7 @@ fn run() -> Result<(), GitClosureError> {
                         "error: {} has an integrity mismatch between stored and recomputed snapshot-hash",
                         snapshot.display()
                     );
-                    process::exit(2);
+                    process::exit(4);
                 }
                 Err(
                     GitClosureError::Parse(_)
@@ -252,7 +252,7 @@ fn run() -> Result<(), GitClosureError> {
                         "error: {} is not parseable as a snapshot",
                         snapshot.display()
                     );
-                    process::exit(3);
+                    process::exit(4);
                 }
                 Err(err) => return Err(err),
             };
