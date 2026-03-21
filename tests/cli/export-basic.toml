@@ -1,0 +1,6 @@
+bin.name = "git-closure"
+args = ["export", "simple.gcl", "--output", "simple.nar"]
+status = "success"
+stdout = ""
+stderr = ""
+fs.sandbox = true

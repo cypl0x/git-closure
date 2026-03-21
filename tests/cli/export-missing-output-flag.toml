@@ -1,0 +1,3 @@
+bin.name = "git-closure"
+args = ["export", "some.gcl"]
+status.code = 2

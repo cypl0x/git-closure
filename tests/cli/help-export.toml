@@ -1,0 +1,18 @@
+bin.name = "git-closure"
+args = ["export", "--help"]
+status = "success"
+stdout = """
+Export a snapshot to another archive format (currently: NAR)
+
+Usage: git-closure export [OPTIONS] --output <OUTPUT> <SNAPSHOT>
+
+Arguments:
+  <SNAPSHOT>  Snapshot file to export
+
+Options:
+  -o, --output <OUTPUT>  Output file path (required; NAR is binary)
+      --format <FORMAT>  Export format (currently only 'nar' is supported) [default: nar] [possible values: nar]
+  -h, --help             Print help
+
+METADATA LOSS: NAR does not store snapshot-hash, git-rev, git-branch, source-uri, or per-file sha256. Only file contents, symlink targets, and the executable flag are preserved. Use the .gcl format for provenance tracking.
+"""

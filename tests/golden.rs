@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use git_closure::{build_snapshot, render_snapshot, RenderFormat};
+use git_closure::{build_snapshot, export_snapshot_as_nar, render_snapshot, RenderFormat};
 use tempfile::TempDir;
 
 #[cfg(unix)]
@@ -62,6 +62,69 @@ fn td07_simple_tree_build_matches_golden_snapshot_bytes() {
     assert_eq!(
         actual_snapshot, expected_snapshot,
         "golden snapshot bytes drifted for tests/fixtures/simple"
+    );
+}
+
+/// Verify that `export_snapshot_as_nar` produces byte-identical output to the
+/// committed golden fixture `tests/fixtures/simple.nar`.
+///
+/// The fixture was generated with `git-closure export tests/fixtures/simple.gcl
+/// --output tests/fixtures/simple.nar` and committed.  Any future regression in
+/// the NAR writer will cause this test to fail.
+#[test]
+fn nar_export_matches_golden_fixture() {
+    let snapshot = Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/simple.gcl"
+    ));
+    let expected_nar = fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/simple.nar"
+    ))
+    .expect("read golden simple.nar fixture");
+
+    let tmp = TempDir::new().expect("create temp dir");
+    let output = tmp.path().join("actual.nar");
+    export_snapshot_as_nar(snapshot, &output).expect("export_snapshot_as_nar must succeed");
+
+    let actual_nar = fs::read(&output).expect("read actual NAR output");
+    assert_eq!(
+        actual_nar, expected_nar,
+        "NAR export bytes drifted from golden fixture tests/fixtures/simple.nar"
+    );
+}
+
+/// Optional smoke test: verify our NAR output is accepted by `nix nar ls`.
+///
+/// This test is ignored by default and only runs with
+/// `cargo test -- --ignored`.  It does NOT make `nix` a required runtime
+/// dependency of the main feature; it is purely an optional validation tool.
+#[test]
+#[ignore = "requires nix in PATH; run with: cargo test -- --ignored"]
+fn nar_export_accepted_by_nix_nar_ls() {
+    use std::process::Command;
+
+    let snapshot = Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/simple.gcl"
+    ));
+    let tmp = TempDir::new().expect("create temp dir");
+    let nar_path = tmp.path().join("actual.nar");
+    export_snapshot_as_nar(snapshot, &nar_path).expect("export_snapshot_as_nar must succeed");
+
+    // `nix nar ls --recursive <nar-file> /` lists the archive root.
+    // A non-zero exit code indicates a malformed NAR.
+    let output = Command::new("nix")
+        .args(["nar", "ls", "--recursive", nar_path.to_str().unwrap(), "/"])
+        .output()
+        .expect("failed to spawn nix nar ls");
+
+    assert!(
+        output.status.success(),
+        "nix nar ls rejected our NAR output (exit {:?}):\nstdout: {}\nstderr: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 
