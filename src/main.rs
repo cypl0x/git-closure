@@ -424,8 +424,20 @@ enum DiffJsonEntry {
         new_target: String,
     },
     Unknown {
-        description: String,
+        variant_name: String,
     },
+}
+
+fn stable_diff_variant_name(entry: &DiffEntry) -> &'static str {
+    match entry {
+        DiffEntry::Added { .. } => "added",
+        DiffEntry::Removed { .. } => "removed",
+        DiffEntry::Modified { .. } => "modified",
+        DiffEntry::Renamed { .. } => "renamed",
+        DiffEntry::ModeChanged { .. } => "mode_changed",
+        DiffEntry::SymlinkTargetChanged { .. } => "symlink_target_changed",
+        _ => "unknown",
+    }
 }
 
 fn diff_entries_json(entries: &[DiffEntry]) -> String {
@@ -466,7 +478,7 @@ fn diff_entries_json(entries: &[DiffEntry]) -> String {
                 new_target: new_target.clone(),
             },
             _ => DiffJsonEntry::Unknown {
-                description: format!("{entry:?}"),
+                variant_name: stable_diff_variant_name(entry).to_string(),
             },
         })
         .collect();
@@ -701,6 +713,30 @@ mod tests {
         );
         assert_eq!(arr[0]["old_target"], Value::String("a".to_string()));
         assert_eq!(arr[0]["new_target"], Value::String("b".to_string()));
+    }
+
+    #[test]
+    fn diff_json_unknown_entry_uses_variant_name_field() {
+        let payload = vec![super::DiffJsonEntry::Unknown {
+            variant_name: "future_variant".to_string(),
+        }];
+
+        let value = serde_json::to_value(&payload).expect("serialize unknown diff JSON payload");
+        let arr = value.as_array().expect("unknown payload must be an array");
+        let obj = arr[0]
+            .as_object()
+            .expect("unknown payload entry must be an object");
+
+        assert_eq!(obj.get("type"), Some(&Value::String("unknown".to_string())));
+        assert_eq!(
+            obj.get("variant_name"),
+            Some(&Value::String("future_variant".to_string())),
+            "unknown payload should expose stable variant_name field"
+        );
+        assert!(
+            !obj.contains_key("description"),
+            "unknown payload must not expose debug-oriented description field"
+        );
     }
 
     #[test]
