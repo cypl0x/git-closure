@@ -321,7 +321,8 @@ pub struct GithubApiProvider;
 impl Provider for GithubApiProvider {
     fn fetch(&self, source: &str) -> Result<FetchedSource> {
         let parsed = parse_github_api_source(source)?;
-        let tarball = download_github_tarball(&parsed)?;
+        let max_bytes = github_tarball_max_bytes()?;
+        let tarball = download_github_tarball(&parsed, max_bytes)?;
 
         let tempdir = TempDir::new()?;
         let checkout = tempdir.path().join("repo");
@@ -382,16 +383,20 @@ fn parse_github_api_source(source: &str) -> Result<ParsedGithubApiSource> {
     }
 }
 
-fn download_github_tarball(source: &ParsedGithubApiSource) -> Result<Vec<u8>> {
+fn download_github_tarball(source: &ParsedGithubApiSource, max_bytes: u64) -> Result<Vec<u8>> {
     let url = source.archive_url();
     let token = std::env::var(GITHUB_TOKEN_ENV)
         .ok()
         .filter(|v| !v.is_empty());
-    download_tarball_url(&url, &source.display_name(), token.as_deref())
+    download_tarball_url(&url, &source.display_name(), token.as_deref(), max_bytes)
 }
 
-fn download_tarball_url(url: &str, source_name: &str, token: Option<&str>) -> Result<Vec<u8>> {
-    let max_bytes = github_tarball_max_bytes()?;
+fn download_tarball_url(
+    url: &str,
+    source_name: &str,
+    token: Option<&str>,
+    max_bytes: u64,
+) -> Result<Vec<u8>> {
     let agent = ureq::builder().build();
     let mut request = agent
         .get(url)
@@ -1167,7 +1172,6 @@ mod tests {
 
     #[test]
     fn github_api_download_follows_redirects() {
-        let _env_guard = lock_tarball_limit_env();
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
         let addr = listener.local_addr().expect("listener addr");
         let payload = b"redirect-ok".to_vec();
@@ -1213,6 +1217,7 @@ mod tests {
             &format!("http://{addr}/redirect"),
             "owner/repo@HEAD",
             None,
+            32,
         )
         .expect("redirected download should succeed");
 
@@ -1225,8 +1230,6 @@ mod tests {
 
     #[test]
     fn github_api_download_rejects_content_length_over_limit() {
-        let _env = TarballLimitEnvOverride::set_for_test("8");
-
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
         let addr = listener.local_addr().expect("listener addr");
         let server = std::thread::spawn(move || {
@@ -1238,8 +1241,12 @@ mod tests {
                 .expect("write response");
         });
 
-        let result =
-            super::download_tarball_url(&format!("http://{addr}/tarball"), "owner/repo@HEAD", None);
+        let result = super::download_tarball_url(
+            &format!("http://{addr}/tarball"),
+            "owner/repo@HEAD",
+            None,
+            8,
+        );
         server.join().expect("join test server");
 
         let err = result.expect_err("content-length over configured limit must fail");
@@ -1252,8 +1259,6 @@ mod tests {
 
     #[test]
     fn github_api_download_rejects_stream_over_limit() {
-        let _env = TarballLimitEnvOverride::set_for_test("16");
-
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
         let addr = listener.local_addr().expect("listener addr");
         let server = std::thread::spawn(move || {
@@ -1273,8 +1278,12 @@ mod tests {
             }
         });
 
-        let result =
-            super::download_tarball_url(&format!("http://{addr}/stream"), "owner/repo@HEAD", None);
+        let result = super::download_tarball_url(
+            &format!("http://{addr}/stream"),
+            "owner/repo@HEAD",
+            None,
+            16,
+        );
         server.join().expect("join test server");
 
         let err = result.expect_err("stream over configured limit must fail");

@@ -238,7 +238,7 @@ fn parse_files_value(
     }
 
     let mut files = Vec::with_capacity(root.len());
-    let mut seen_paths = HashSet::with_capacity(root.len());
+    let mut seen_paths: HashSet<&str> = HashSet::with_capacity(root.len());
     let mut total_bytes = 0u64;
 
     for entry in root {
@@ -259,7 +259,7 @@ fn parse_files_value(
             .as_str()
             .ok_or_else(|| GitClosureError::Parse("entry content must be a string".to_string()))?;
 
-        let mut path = None;
+        let mut path: Option<&str> = None;
         let mut sha256 = None;
         let mut mode = None;
         let mut size = None;
@@ -290,14 +290,9 @@ fn parse_files_value(
 
             match key {
                 "path" => {
-                    path = Some(
-                        value
-                            .as_str()
-                            .ok_or_else(|| {
-                                GitClosureError::Parse(":path must be a string".to_string())
-                            })?
-                            .to_string(),
-                    );
+                    path = Some(value.as_str().ok_or_else(|| {
+                        GitClosureError::Parse(":path must be a string".to_string())
+                    })?);
                 }
                 "sha256" => {
                     sha256 = Some(
@@ -367,7 +362,7 @@ fn parse_files_value(
         }
 
         let path = path.ok_or_else(|| GitClosureError::Parse("missing :path".to_string()))?;
-        if !seen_paths.insert(path.clone()) {
+        if !seen_paths.insert(path) {
             return Err(GitClosureError::Parse(format!(
                 "duplicate :path in snapshot: {}",
                 path
@@ -395,7 +390,7 @@ fn parse_files_value(
             let target = target
                 .ok_or_else(|| GitClosureError::Parse("missing :target for symlink".to_string()))?;
             files.push(SnapshotFile {
-                path,
+                path: path.to_string(),
                 sha256: String::new(),
                 mode: "120000".to_string(),
                 size: 0,
@@ -438,7 +433,7 @@ fn parse_files_value(
 
         if content.len() as u64 != size {
             return Err(GitClosureError::SizeMismatch {
-                path,
+                path: path.to_string(),
                 expected: size,
                 actual: content.len() as u64,
             });
@@ -454,7 +449,7 @@ fn parse_files_value(
         }
 
         files.push(SnapshotFile {
-            path,
+            path: path.to_string(),
             sha256,
             mode,
             size,
