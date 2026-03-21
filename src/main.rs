@@ -706,6 +706,85 @@ mod tests {
     }
 
     #[test]
+    fn diff_entries_json_all_known_variants_produce_typed_output() {
+        // Update this table when DiffEntry gains new variants.
+        let cases = vec![
+            (
+                DiffEntry::Added {
+                    path: "added.txt".to_string(),
+                },
+                "added",
+            ),
+            (
+                DiffEntry::Removed {
+                    path: "removed.txt".to_string(),
+                },
+                "removed",
+            ),
+            (
+                DiffEntry::Modified {
+                    path: "modified.txt".to_string(),
+                    old_sha256: "oldhash".to_string(),
+                    new_sha256: "newhash".to_string(),
+                },
+                "modified",
+            ),
+            (
+                DiffEntry::Renamed {
+                    old_path: "old/name.txt".to_string(),
+                    new_path: "new/name.txt".to_string(),
+                },
+                "renamed",
+            ),
+            (
+                DiffEntry::ModeChanged {
+                    path: "script.sh".to_string(),
+                    old_mode: "644".to_string(),
+                    new_mode: "755".to_string(),
+                },
+                "mode_changed",
+            ),
+            (
+                DiffEntry::SymlinkTargetChanged {
+                    path: "link".to_string(),
+                    old_target: "a".to_string(),
+                    new_target: "b".to_string(),
+                },
+                "symlink_target_changed",
+            ),
+        ];
+
+        let entries: Vec<DiffEntry> = cases.iter().map(|(entry, _)| entry.clone()).collect();
+        let json = diff_entries_json(&entries);
+        let value: Value = serde_json::from_str(&json).expect("diff JSON must parse");
+        let arr = value.as_array().expect("diff JSON must be an array");
+
+        assert_eq!(
+            arr.len(),
+            cases.len(),
+            "output should preserve one JSON entry per input variant"
+        );
+
+        for (idx, (entry, expected_type)) in cases.iter().enumerate() {
+            assert_eq!(
+                super::stable_diff_variant_name(entry),
+                *expected_type,
+                "stable variant mapping should stay aligned with expected type strings"
+            );
+            assert_eq!(
+                arr[idx].get("type"),
+                Some(&Value::String((*expected_type).to_string())),
+                "entry {idx} should use expected type string"
+            );
+            assert_ne!(
+                arr[idx].get("type"),
+                Some(&Value::String("unknown".to_string())),
+                "known variants must not serialize as unknown"
+            );
+        }
+    }
+
+    #[test]
     fn diff_json_unknown_entry_uses_variant_name_field() {
         let payload = vec![super::DiffJsonEntry::Unknown {
             variant_name: "future_variant".to_string(),
