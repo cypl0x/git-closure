@@ -540,7 +540,7 @@ pub fn fmt_snapshot_with_options(snapshot: &Path, options: FmtOptions) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::snapshot::hash::compute_snapshot_hash;
+    use crate::gcl::hash::compute_snapshot_hash;
     use proptest::prelude::*;
     use std::collections::BTreeMap;
 
@@ -556,7 +556,7 @@ mod tests {
     }
 
     fn make_text_file(path: &str, content: &str) -> SnapshotFile {
-        use crate::snapshot::hash::sha256_hex;
+        use crate::gcl::hash::sha256_hex;
         let bytes = content.as_bytes().to_vec();
         SnapshotFile {
             path: path.to_string(),
@@ -598,7 +598,7 @@ mod tests {
                 let bytes = content.into_bytes();
                 SnapshotFile {
                     path,
-                    sha256: crate::snapshot::hash::sha256_hex(&bytes),
+                    sha256: crate::gcl::hash::sha256_hex(&bytes),
                     mode,
                     size: bytes.len() as u64,
                     encoding: None,
@@ -614,7 +614,7 @@ mod tests {
         )
             .prop_map(|(path, mode, bytes)| SnapshotFile {
                 path,
-                sha256: crate::snapshot::hash::sha256_hex(&bytes),
+                sha256: crate::gcl::hash::sha256_hex(&bytes),
                 mode,
                 size: bytes.len() as u64,
                 encoding: Some("base64".to_string()),
@@ -660,7 +660,7 @@ mod tests {
 
     #[test]
     fn serialize_then_parse_roundtrip_binary_file() {
-        use crate::snapshot::hash::sha256_hex;
+        use crate::gcl::hash::sha256_hex;
         let bytes: Vec<u8> = (0u8..=255).collect();
         let file = SnapshotFile {
             path: "all-bytes.bin".to_string(),
@@ -726,9 +726,9 @@ mod tests {
     fn parse_snapshot_rejects_duplicate_regular_paths() {
         let content_a = "a";
         let content_b = "b";
-        let digest_a = crate::snapshot::hash::sha256_hex(content_a.as_bytes());
-        let digest_b = crate::snapshot::hash::sha256_hex(content_b.as_bytes());
-        let snapshot_hash = crate::snapshot::hash::sha256_hex(b"placeholder");
+        let digest_a = crate::gcl::hash::sha256_hex(content_a.as_bytes());
+        let digest_b = crate::gcl::hash::sha256_hex(content_b.as_bytes());
+        let snapshot_hash = crate::gcl::hash::sha256_hex(b"placeholder");
         let input = format!(
             ";; git-closure snapshot v0.1\n;; snapshot-hash: {snapshot_hash}\n;; file-count: 2\n\n(\n  ((:path \"dup.txt\" :sha256 \"{digest_a}\" :mode \"644\" :size 1) \"{content_a}\")\n  ((:path \"dup.txt\" :sha256 \"{digest_b}\" :mode \"644\" :size 1) \"{content_b}\")\n)\n"
         );
@@ -746,8 +746,8 @@ mod tests {
     #[test]
     fn parse_snapshot_rejects_duplicate_regular_and_symlink_paths() {
         let content = "x";
-        let digest = crate::snapshot::hash::sha256_hex(content.as_bytes());
-        let snapshot_hash = crate::snapshot::hash::sha256_hex(b"placeholder");
+        let digest = crate::gcl::hash::sha256_hex(content.as_bytes());
+        let snapshot_hash = crate::gcl::hash::sha256_hex(b"placeholder");
         let input = format!(
             ";; git-closure snapshot v0.1\n;; snapshot-hash: {snapshot_hash}\n;; file-count: 2\n\n(\n  ((:path \"dup.txt\" :sha256 \"{digest}\" :mode \"644\" :size 1) \"{content}\")\n  ((:path \"dup.txt\" :type \"symlink\" :target \"target.txt\") \"\")\n)\n"
         );
@@ -766,8 +766,8 @@ mod tests {
     #[test]
     fn parse_snapshot_rejects_duplicate_path_before_decoding_later_content() {
         let content = "a";
-        let digest = crate::snapshot::hash::sha256_hex(content.as_bytes());
-        let snapshot_hash = crate::snapshot::hash::sha256_hex(b"placeholder");
+        let digest = crate::gcl::hash::sha256_hex(content.as_bytes());
+        let snapshot_hash = crate::gcl::hash::sha256_hex(b"placeholder");
         let huge_invalid_base64 = format!("{}!", "A".repeat(1024 * 1024));
         let input = format!(
             ";; git-closure snapshot v0.1\n;; snapshot-hash: {snapshot_hash}\n;; file-count: 2\n\n(\n  ((:path \"dup.txt\" :sha256 \"{digest}\" :mode \"644\" :size 1) \"{content}\")\n  ((:path \"dup.txt\" :sha256 \"{digest}\" :mode \"644\" :size 1 :encoding \"base64\") \"{huge_invalid_base64}\")\n)\n"
@@ -792,8 +792,8 @@ mod tests {
 
         let content_a = "a";
         let content_b = "b";
-        let digest_a = crate::snapshot::hash::sha256_hex(content_a.as_bytes());
-        let digest_b = crate::snapshot::hash::sha256_hex(content_b.as_bytes());
+        let digest_a = crate::gcl::hash::sha256_hex(content_a.as_bytes());
+        let digest_b = crate::gcl::hash::sha256_hex(content_b.as_bytes());
         let files = vec![
             SnapshotFile {
                 path: "dup.txt".to_string(),
@@ -814,7 +814,7 @@ mod tests {
                 content: content_b.as_bytes().to_vec(),
             },
         ];
-        let snapshot_hash = crate::snapshot::hash::compute_snapshot_hash(&files);
+        let snapshot_hash = crate::gcl::hash::compute_snapshot_hash(&files);
         let input = format!(
             ";; git-closure snapshot v0.1\n;; snapshot-hash: {snapshot_hash}\n;; file-count: 2\n\n(\n  ((:path \"dup.txt\" :sha256 \"{digest_a}\" :mode \"644\" :size 1) \"{content_a}\")\n  ((:path \"dup.txt\" :sha256 \"{digest_b}\" :mode \"644\" :size 1) \"{content_b}\")\n)\n"
         );
@@ -925,7 +925,7 @@ mod tests {
     fn parse_snapshot_rejects_short_sha256() {
         let content = "x";
         let invalid_sha = "a".repeat(63);
-        let snapshot_hash = crate::snapshot::hash::sha256_hex(b"placeholder");
+        let snapshot_hash = crate::gcl::hash::sha256_hex(b"placeholder");
         let input = format!(
             ";; git-closure snapshot v0.1\n;; snapshot-hash: {snapshot_hash}\n;; file-count: 1\n\n(\n  ((:path \"short.txt\" :sha256 \"{invalid_sha}\" :mode \"644\" :size 1) \"{content}\")\n)\n"
         );
@@ -946,7 +946,7 @@ mod tests {
     fn parse_snapshot_rejects_non_hex_sha256() {
         let content = "x";
         let invalid_sha = "not-a-hash";
-        let snapshot_hash = crate::snapshot::hash::sha256_hex(b"placeholder");
+        let snapshot_hash = crate::gcl::hash::sha256_hex(b"placeholder");
         let input = format!(
             ";; git-closure snapshot v0.1\n;; snapshot-hash: {snapshot_hash}\n;; file-count: 1\n\n(\n  ((:path \"nonhex.txt\" :sha256 \"{invalid_sha}\" :mode \"644\" :size 1) \"{content}\")\n)\n"
         );
@@ -967,7 +967,7 @@ mod tests {
     fn parse_snapshot_rejects_uppercase_sha256() {
         let content = "x";
         let invalid_sha = "A".repeat(64);
-        let snapshot_hash = crate::snapshot::hash::sha256_hex(b"placeholder");
+        let snapshot_hash = crate::gcl::hash::sha256_hex(b"placeholder");
         let input = format!(
             ";; git-closure snapshot v0.1\n;; snapshot-hash: {snapshot_hash}\n;; file-count: 1\n\n(\n  ((:path \"upper.txt\" :sha256 \"{invalid_sha}\" :mode \"644\" :size 1) \"{content}\")\n)\n"
         );
@@ -1027,7 +1027,7 @@ mod tests {
 
     #[test]
     fn list_snapshot_symlink_entry_has_correct_fields() {
-        use crate::snapshot::hash::sha256_hex;
+        use crate::gcl::hash::sha256_hex;
         use std::fs;
         use tempfile::TempDir;
 

@@ -39,7 +39,7 @@ pub fn summarize_snapshot(path: &Path) -> Result<SnapshotSummary> {
 #[cfg(test)]
 mod tests {
     use super::summarize_snapshot;
-    use crate::snapshot::build::build_snapshot;
+    use crate::gcl::build::build_snapshot;
     use tempfile::TempDir;
 
     #[test]

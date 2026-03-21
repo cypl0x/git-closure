@@ -5,7 +5,7 @@
 /// (artifact backends, recipe evaluation, projections) work in terms of
 /// `Closure` rather than any serialization format.
 ///
-/// The `.gcl` snapshot format (`src/snapshot/`) and the NAR artifact backend
+/// The `.gcl` snapshot format (`src/gcl/`) and the NAR artifact backend
 /// (`src/nar.rs`) are both *representations* of a `Closure`; neither is the IR.
 ///
 /// # Concrete vs. unrealized closures
@@ -20,7 +20,7 @@
 pub mod identity;
 
 use crate::error::GitClosureError;
-use crate::snapshot::{SnapshotFile, SnapshotHeader};
+use crate::gcl::{SnapshotFile, SnapshotHeader};
 
 // ── Core IR types ─────────────────────────────────────────────────────────────
 
@@ -199,7 +199,7 @@ impl TryFrom<Closure> for (SnapshotHeader, Vec<SnapshotFile>) {
             }
         }
 
-        let snapshot_hash = crate::snapshot::hash::compute_snapshot_hash(&files);
+        let snapshot_hash = crate::gcl::hash::compute_snapshot_hash(&files);
 
         let header = SnapshotHeader {
             snapshot_hash,
@@ -218,10 +218,10 @@ impl TryFrom<Closure> for (SnapshotHeader, Vec<SnapshotFile>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::snapshot::hash::compute_snapshot_hash;
+    use crate::gcl::hash::compute_snapshot_hash;
 
     fn make_file_node(path: &str, content: &[u8], mode: &str) -> ClosureNode {
-        let sha256 = crate::snapshot::hash::sha256_hex(content);
+        let sha256 = crate::gcl::hash::sha256_hex(content);
         ClosureNode::File(FileNode {
             path: path.to_string(),
             sha256,
@@ -239,7 +239,7 @@ mod tests {
     }
 
     fn make_snapshot_file(path: &str, content: &[u8], mode: &str) -> SnapshotFile {
-        let sha256 = crate::snapshot::hash::sha256_hex(content);
+        let sha256 = crate::gcl::hash::sha256_hex(content);
         SnapshotFile {
             path: path.to_string(),
             sha256,
@@ -272,7 +272,7 @@ mod tests {
     #[test]
     fn closure_id_matches_snapshot_hash_for_regular_file() {
         let content = b"hello world";
-        let sha256 = crate::snapshot::hash::sha256_hex(content);
+        let sha256 = crate::gcl::hash::sha256_hex(content);
 
         let snap_file = SnapshotFile {
             path: "a.txt".to_string(),
@@ -330,9 +330,9 @@ mod tests {
     #[test]
     fn closure_id_matches_snapshot_hash_for_mixed_tree() {
         let content_a = b"file a";
-        let sha256_a = crate::snapshot::hash::sha256_hex(content_a);
+        let sha256_a = crate::gcl::hash::sha256_hex(content_a);
         let content_b = b"file b";
-        let sha256_b = crate::snapshot::hash::sha256_hex(content_b);
+        let sha256_b = crate::gcl::hash::sha256_hex(content_b);
 
         let snap_files = vec![
             SnapshotFile {
@@ -486,7 +486,7 @@ mod tests {
     #[test]
     fn try_from_closure_round_trips_file_node() {
         let content = b"round trip content";
-        let sha256 = crate::snapshot::hash::sha256_hex(content);
+        let sha256 = crate::gcl::hash::sha256_hex(content);
         let node = make_file_node("rt.txt", content, "644");
         let closure = Closure {
             nodes: vec![node],
@@ -548,7 +548,7 @@ mod tests {
     #[test]
     fn try_from_closure_binary_content_gets_base64_encoding() {
         let content = vec![0u8, 1, 2, 255, 254]; // non-UTF-8
-        let sha256 = crate::snapshot::hash::sha256_hex(&content);
+        let sha256 = crate::gcl::hash::sha256_hex(&content);
         let node = ClosureNode::File(FileNode {
             path: "bin".to_string(),
             sha256,
@@ -585,7 +585,7 @@ mod tests {
     #[test]
     fn full_round_trip_snapshot_to_closure_and_back() {
         let content_a = b"content of a";
-        let sha256_a = crate::snapshot::hash::sha256_hex(content_a);
+        let sha256_a = crate::gcl::hash::sha256_hex(content_a);
         let content_b = b"content of b \xff\xfe"; // binary
 
         let files_original = vec![

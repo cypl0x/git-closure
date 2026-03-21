@@ -241,9 +241,9 @@ mod tests {
     fn nar_backend_write_matches_current_export_path() {
         // Verify byte-for-byte compatibility between the new NarBackend path
         // and the legacy build_nar_tree + write_nar path.
+        use crate::gcl::export::build_nar_tree;
+        use crate::gcl::{SnapshotFile, SnapshotHeader};
         use crate::nar::write_nar;
-        use crate::snapshot::export::build_nar_tree;
-        use crate::snapshot::{SnapshotFile, SnapshotHeader};
 
         let files = vec![
             SnapshotFile {

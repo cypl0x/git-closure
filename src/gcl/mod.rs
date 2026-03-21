@@ -1,6 +1,12 @@
-/// Core snapshot types shared across the build, serialization, hash, and
-/// materialize layers.  Deliberately kept as a types-only module to keep
-/// the dependency graph acyclic.
+/// GCL v1 compatibility layer. Types and operations for the `.gcl`
+/// S-expression snapshot format.
+///
+/// These are the concrete serialization types for the `.gcl` wire format —
+/// not the semantic IR. The semantic IR lives in [`crate::ir`]. Artifact
+/// backends live in [`crate::backends`].
+///
+/// Deliberately kept as a types-only module to preserve an acyclic
+/// dependency graph.
 pub mod build;
 pub mod diff;
 pub mod export;

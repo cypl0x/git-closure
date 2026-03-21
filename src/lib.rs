@@ -55,38 +55,38 @@ pub mod nar;
 pub mod providers;
 
 pub(crate) mod backends;
+pub(crate) mod gcl;
 pub(crate) mod git;
 pub(crate) mod materialize;
-pub(crate) mod snapshot;
 pub(crate) mod utils;
 
 // ── Public re-exports ─────────────────────────────────────────────────────────
 
 pub use error::GitClosureError;
+pub use gcl::build::{
+    build_snapshot, build_snapshot_from_provider, build_snapshot_from_source,
+    build_snapshot_with_options,
+};
+pub use gcl::diff::{diff_snapshot_to_source, diff_snapshots, DiffEntry, DiffResult};
+pub use gcl::export::export_snapshot_as_nar;
+pub use gcl::render::{render_snapshot, RenderFormat};
+pub use gcl::serial::{
+    fmt_snapshot, fmt_snapshot_with_options, list_snapshot, list_snapshot_str, parse_snapshot,
+    parse_snapshot_with_limits, FmtOptions, ParseLimits,
+};
+pub use gcl::summary::summarize_snapshot;
+pub use gcl::{
+    BuildOptions, ListEntry, SnapshotFile, SnapshotHeader, SnapshotSummary, VerifyReport,
+};
 pub use ir::{Closure, ClosureId, ClosureNode, FileNode, SymlinkNode};
 pub use materialize::{
     materialize_snapshot, materialize_snapshot_with_options, verify_snapshot,
     verify_snapshot_parsed, verify_snapshot_with_root, MaterializeOptions, MaterializePolicy,
 };
-pub use snapshot::build::{
-    build_snapshot, build_snapshot_from_provider, build_snapshot_from_source,
-    build_snapshot_with_options,
-};
-pub use snapshot::diff::{diff_snapshot_to_source, diff_snapshots, DiffEntry, DiffResult};
-pub use snapshot::export::export_snapshot_as_nar;
-pub use snapshot::render::{render_snapshot, RenderFormat};
-pub use snapshot::serial::{
-    fmt_snapshot, fmt_snapshot_with_options, list_snapshot, list_snapshot_str, parse_snapshot,
-    parse_snapshot_with_limits, FmtOptions, ParseLimits,
-};
-pub use snapshot::summary::summarize_snapshot;
-pub use snapshot::{
-    BuildOptions, ListEntry, SnapshotFile, SnapshotHeader, SnapshotSummary, VerifyReport,
-};
 
 #[doc(hidden)]
 pub fn fuzz_parse_snapshot(input: &str) {
-    let _ = snapshot::serial::parse_snapshot(input);
+    let _ = gcl::serial::parse_snapshot(input);
 }
 
 #[doc(hidden)]
@@ -104,6 +104,12 @@ pub fn fuzz_lexical_normalize(path: &str) {
 #[cfg(test)]
 mod tests {
     use crate::error::GitClosureError;
+    use crate::gcl::build::{
+        build_snapshot, build_snapshot_from_provider, build_snapshot_with_options,
+    };
+    use crate::gcl::hash::compute_snapshot_hash;
+    use crate::gcl::serial::parse_snapshot;
+    use crate::gcl::{BuildOptions, SnapshotFile, SnapshotHeader};
     use crate::git::{
         ensure_git_source_is_clean, evaluate_git_status_porcelain, git_ls_files,
         parse_porcelain_entry, GitRepoContext,
@@ -112,12 +118,6 @@ mod tests {
         materialize_snapshot, verify_snapshot, verify_snapshot_parsed, verify_snapshot_with_root,
     };
     use crate::providers::{FetchedSource, Provider};
-    use crate::snapshot::build::{
-        build_snapshot, build_snapshot_from_provider, build_snapshot_with_options,
-    };
-    use crate::snapshot::hash::compute_snapshot_hash;
-    use crate::snapshot::serial::parse_snapshot;
-    use crate::snapshot::{BuildOptions, SnapshotFile, SnapshotHeader};
     use std::collections::HashSet;
     use std::fs;
     use std::io::Write;
@@ -858,7 +858,7 @@ mod tests {
         let output = temp.path().join("out");
 
         let payload = b"owned\n";
-        let payload_sha = crate::snapshot::hash::sha256_hex(payload);
+        let payload_sha = crate::gcl::hash::sha256_hex(payload);
         let files = vec![
             SnapshotFile {
                 path: "a".to_string(),
@@ -1053,7 +1053,7 @@ mod tests {
         let output_dir = TempDir::new().expect("create output tempdir");
         let output = output_dir.path().join("snapshot.gcl");
 
-        crate::snapshot::build::build_snapshot_from_source(
+        crate::gcl::build::build_snapshot_from_source(
             source.path().to_str().expect("source path utf-8"),
             &output,
             &BuildOptions::default(),
@@ -1527,7 +1527,7 @@ mod tests {
     fn quote_string_matches_lexpr_printer() {
         let sample = "line1\nline2\u{0000}\u{fffd}\u{1f642}\\\"";
         let expected = lexpr::to_string(&lexpr::Value::string(sample)).expect("print with lexpr");
-        assert_eq!(crate::snapshot::serial::quote_string(sample), expected);
+        assert_eq!(crate::gcl::serial::quote_string(sample), expected);
     }
 
     #[test]
@@ -1742,10 +1742,7 @@ fn main() {
 
     #[test]
     fn serialize_symlink_type_field_uses_quote_string() {
-        assert_eq!(
-            crate::snapshot::serial::quote_string("symlink"),
-            "\"symlink\""
-        );
+        assert_eq!(crate::gcl::serial::quote_string("symlink"), "\"symlink\"");
 
         let source = TempDir::new().expect("create tempdir");
         let target_path = source.path().join("target.txt");

@@ -76,7 +76,7 @@ const TOK_PAR: [u8; 16] = *b"\x01\0\0\0\0\0\0\0)\0\0\0\0\0\0\0";
 
 /// A node in a NAR archive tree.
 ///
-/// Produced by [`crate::snapshot::export::build_nar_tree`] from a parsed
+/// Produced by [`crate::gcl::export::build_nar_tree`] from a parsed
 /// `.gcl` snapshot and passed to [`write_nar`] for serialization.
 #[derive(Debug, Clone)]
 pub enum NarNode {

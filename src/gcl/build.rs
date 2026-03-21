@@ -573,10 +573,9 @@ mod tests {
             fs::read_to_string(&annotated_snapshot).expect("read annotated snapshot");
 
         let (plain_header, _plain_files) =
-            crate::snapshot::serial::parse_snapshot(&plain_text).expect("parse plain snapshot");
+            crate::gcl::serial::parse_snapshot(&plain_text).expect("parse plain snapshot");
         let (annotated_header, _annotated_files) =
-            crate::snapshot::serial::parse_snapshot(&annotated_text)
-                .expect("parse annotated snapshot");
+            crate::gcl::serial::parse_snapshot(&annotated_text).expect("parse annotated snapshot");
 
         assert_eq!(plain_header.snapshot_hash, annotated_header.snapshot_hash);
         assert!(annotated_header
@@ -603,8 +602,7 @@ mod tests {
         .expect("build from local provider");
 
         let text = fs::read_to_string(snapshot).expect("read snapshot");
-        let (header, _files) =
-            crate::snapshot::serial::parse_snapshot(&text).expect("parse snapshot");
+        let (header, _files) = crate::gcl::serial::parse_snapshot(&text).expect("parse snapshot");
         assert!(
             !header
                 .extra_headers

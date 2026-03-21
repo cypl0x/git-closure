@@ -439,9 +439,9 @@ struct RenderJsonFile<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::snapshot::hash::{compute_snapshot_hash, sha256_hex};
-    use crate::snapshot::serial::serialize_snapshot;
-    use crate::snapshot::{SnapshotFile, SnapshotHeader};
+    use crate::gcl::hash::{compute_snapshot_hash, sha256_hex};
+    use crate::gcl::serial::serialize_snapshot;
+    use crate::gcl::{SnapshotFile, SnapshotHeader};
     use std::fs;
     use tempfile::TempDir;
 

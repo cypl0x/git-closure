@@ -332,9 +332,9 @@ fn compute_diff(left: &[SnapshotFile], right: &[SnapshotFile]) -> DiffResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::snapshot::hash::{compute_snapshot_hash, sha256_hex};
-    use crate::snapshot::serial::serialize_snapshot;
-    use crate::snapshot::SnapshotFile;
+    use crate::gcl::hash::{compute_snapshot_hash, sha256_hex};
+    use crate::gcl::serial::serialize_snapshot;
+    use crate::gcl::SnapshotFile;
     use std::fs;
     use tempfile::TempDir;
 
@@ -368,7 +368,7 @@ mod tests {
     }
 
     fn write_snap(dir: &TempDir, name: &str, files: &[SnapshotFile]) -> std::path::PathBuf {
-        use crate::snapshot::SnapshotHeader;
+        use crate::gcl::SnapshotHeader;
         let mut sorted = files.to_vec();
         sorted.sort_by(|a, b| a.path.cmp(&b.path));
         let snapshot_hash = compute_snapshot_hash(&sorted);
@@ -595,12 +595,12 @@ mod tests {
         fs::write(source.path().join("a.txt"), b"alpha\n").unwrap();
 
         let snapshot = snapshots.path().join("snap.gcl");
-        crate::snapshot::build::build_snapshot(source.path(), &snapshot).unwrap();
+        crate::gcl::build::build_snapshot(source.path(), &snapshot).unwrap();
 
         let result = diff_snapshot_to_source(
             &snapshot,
             source.path(),
-            &crate::snapshot::BuildOptions::default(),
+            &crate::gcl::BuildOptions::default(),
         )
         .unwrap();
         assert!(result.identical);
@@ -614,14 +614,14 @@ mod tests {
         fs::write(source.path().join("a.txt"), b"alpha\n").unwrap();
 
         let snapshot = snapshots.path().join("snap.gcl");
-        crate::snapshot::build::build_snapshot(source.path(), &snapshot).unwrap();
+        crate::gcl::build::build_snapshot(source.path(), &snapshot).unwrap();
 
         fs::write(source.path().join("a.txt"), b"beta\n").unwrap();
 
         let result = diff_snapshot_to_source(
             &snapshot,
             source.path(),
-            &crate::snapshot::BuildOptions::default(),
+            &crate::gcl::BuildOptions::default(),
         )
         .unwrap();
         assert!(result
@@ -637,14 +637,14 @@ mod tests {
         fs::write(source.path().join("a.txt"), b"alpha\n").unwrap();
 
         let snapshot = snapshots.path().join("snap.gcl");
-        crate::snapshot::build::build_snapshot(source.path(), &snapshot).unwrap();
+        crate::gcl::build::build_snapshot(source.path(), &snapshot).unwrap();
 
         fs::write(source.path().join("b.txt"), b"new\n").unwrap();
 
         let result = diff_snapshot_to_source(
             &snapshot,
             source.path(),
-            &crate::snapshot::BuildOptions::default(),
+            &crate::gcl::BuildOptions::default(),
         )
         .unwrap();
         assert!(result.entries.contains(&DiffEntry::Added {

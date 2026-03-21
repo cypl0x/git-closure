@@ -25,14 +25,14 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
+use super::serial::parse_snapshot;
 use crate::backends::ArtifactBackend;
 use crate::error::GitClosureError;
-use crate::snapshot::serial::parse_snapshot;
 
 #[cfg(test)]
-use crate::nar::{write_nar, NarNode};
+use super::SnapshotFile;
 #[cfg(test)]
-use crate::snapshot::SnapshotFile;
+use crate::nar::{write_nar, NarNode};
 #[cfg(test)]
 use std::collections::BTreeMap;
 

@@ -8,9 +8,9 @@ use std::os::unix::fs::symlink;
 use std::os::unix::fs::PermissionsExt;
 
 use crate::error::GitClosureError;
-use crate::snapshot::hash::{compute_snapshot_hash, sha256_hex};
-use crate::snapshot::serial::parse_snapshot;
-use crate::snapshot::{Result, SnapshotFile, SnapshotHeader, VerifyReport};
+use crate::gcl::hash::{compute_snapshot_hash, sha256_hex};
+use crate::gcl::serial::parse_snapshot;
+use crate::gcl::{Result, SnapshotFile, SnapshotHeader, VerifyReport};
 use crate::utils::{
     ensure_no_symlink_ancestors, io_error_with_path, lexical_normalize, reject_if_symlink,
 };
