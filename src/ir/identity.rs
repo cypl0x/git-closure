@@ -3,7 +3,7 @@
 /// [`compute_closure_id`] produces the [`super::ClosureId`] for a concrete
 /// [`super::Closure`].  The algorithm is identical to the v0.1 `.gcl`
 /// `snapshot-hash` field defined in `SPEC.md §6` and implemented in
-/// `src/snapshot/hash.rs`: SHA-256 over length-prefixed fields using `u64`
+/// `src/gcl/hash.rs`: SHA-256 over length-prefixed fields using `u64`
 /// big-endian lengths.
 ///
 /// This intentional alignment means that:

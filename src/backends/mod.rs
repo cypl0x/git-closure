@@ -8,10 +8,10 @@
 //!
 //! | Backend | Module | Format | Status |
 //! |---|---|---|---|
-//! | [`nar::NarBackend`] | `nar` | NAR binary archive | Phase 2: active |
+//! | [`nar::NarBackend`] | `nar` | NAR binary archive | active |
 //!
-//! `GclBackend` (human-readable `.gcl` format) is a planned Phase 3+ backend,
-//! added after the `snapshot/` → `gcl/` module rename stabilizes the interface.
+//! `GclBackend` (human-readable `.gcl` format) is a planned Phase 5+ backend,
+//! deferred until the `compile` subcommand provides a production callsite for it.
 //!
 //! # Architecture note
 //!
