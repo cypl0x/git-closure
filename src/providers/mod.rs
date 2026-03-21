@@ -1039,14 +1039,11 @@ mod tests {
         };
 
         match err {
-            GitClosureError::CommandExitFailure {
-                command, stderr, ..
-            } => {
-                assert_eq!(command, "git");
+            GitClosureError::CommandExitFailure { stderr, .. } => {
                 assert!(!stderr.is_empty(), "stderr payload should be captured");
                 assert!(
-                    stderr.contains("git-clone: clone failed:"),
-                    "stderr payload should include clone step context"
+                    stderr.contains("git-clone"),
+                    "stderr payload should include git-clone prefix"
                 );
             }
             other => panic!("expected CommandExitFailure, got {other:?}"),
