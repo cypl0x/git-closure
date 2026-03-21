@@ -424,16 +424,10 @@ enum DiffJsonEntry {
     },
 }
 
+// Exhaustive match — the compiler enforces coverage when new DiffEntry variants are added.
+// Implemented in DiffEntry::stable_variant_name within the defining crate.
 fn stable_diff_variant_name(entry: &DiffEntry) -> &'static str {
-    match entry {
-        DiffEntry::Added { .. } => "added",
-        DiffEntry::Removed { .. } => "removed",
-        DiffEntry::Modified { .. } => "modified",
-        DiffEntry::Renamed { .. } => "renamed",
-        DiffEntry::ModeChanged { .. } => "mode_changed",
-        DiffEntry::SymlinkTargetChanged { .. } => "symlink_target_changed",
-        _ => "unknown",
-    }
+    entry.stable_variant_name()
 }
 
 fn diff_entries_json(entries: &[DiffEntry]) -> String {

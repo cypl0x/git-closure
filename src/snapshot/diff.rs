@@ -42,6 +42,20 @@ pub enum DiffEntry {
     },
 }
 
+impl DiffEntry {
+    // Exhaustive match — the compiler enforces coverage when new DiffEntry variants are added.
+    pub fn stable_variant_name(&self) -> &'static str {
+        match self {
+            DiffEntry::Added { .. } => "added",
+            DiffEntry::Removed { .. } => "removed",
+            DiffEntry::Modified { .. } => "modified",
+            DiffEntry::Renamed { .. } => "renamed",
+            DiffEntry::ModeChanged { .. } => "mode_changed",
+            DiffEntry::SymlinkTargetChanged { .. } => "symlink_target_changed",
+        }
+    }
+}
+
 /// Result of comparing two snapshots.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffResult {
@@ -636,5 +650,58 @@ mod tests {
         assert!(result.entries.contains(&DiffEntry::Added {
             path: "b.txt".to_string(),
         }));
+    }
+
+    #[test]
+    fn diff_entry_stable_variant_name_covers_known_variants() {
+        let cases = vec![
+            (
+                DiffEntry::Added {
+                    path: "a".to_string(),
+                },
+                "added",
+            ),
+            (
+                DiffEntry::Removed {
+                    path: "a".to_string(),
+                },
+                "removed",
+            ),
+            (
+                DiffEntry::Modified {
+                    path: "a".to_string(),
+                    old_sha256: "old".to_string(),
+                    new_sha256: "new".to_string(),
+                },
+                "modified",
+            ),
+            (
+                DiffEntry::Renamed {
+                    old_path: "old".to_string(),
+                    new_path: "new".to_string(),
+                },
+                "renamed",
+            ),
+            (
+                DiffEntry::ModeChanged {
+                    path: "a".to_string(),
+                    old_mode: "644".to_string(),
+                    new_mode: "755".to_string(),
+                },
+                "mode_changed",
+            ),
+            (
+                DiffEntry::SymlinkTargetChanged {
+                    path: "link".to_string(),
+                    old_target: "a".to_string(),
+                    new_target: "b".to_string(),
+                },
+                "symlink_target_changed",
+            ),
+        ];
+
+        for (entry, expected) in cases {
+            assert_eq!(entry.stable_variant_name(), expected);
+        }
     }
 }
