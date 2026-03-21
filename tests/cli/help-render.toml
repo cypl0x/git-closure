@@ -1,3 +1,17 @@
 bin.name = "git-closure"
 args = ["render", "--help"]
 status = "success"
+stdout = """
+Render a snapshot as a human-readable report (text, Markdown, HTML, or JSON)
+
+Usage: git-closure render [OPTIONS] <SNAPSHOT>
+
+Arguments:
+  <SNAPSHOT>  Snapshot file to render
+
+Options:
+      --format <FORMAT>  [default: text] [possible values: text, markdown, html, json]
+      --pandoc           Prepend YAML front matter for pandoc (only with --format markdown)
+  -o, --output <OUTPUT>  Write output to file instead of stdout
+  -h, --help             Print help
+"""

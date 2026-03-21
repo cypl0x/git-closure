@@ -1,3 +1,17 @@
 bin.name = "git-closure"
 args = ["diff", "--help"]
 status = "success"
+stdout = """
+Compare two snapshots and show differences
+
+Usage: git-closure diff [OPTIONS] <LEFT> <RIGHT>
+
+Arguments:
+  <LEFT>   Left (old) snapshot
+  <RIGHT>  Right (new) snapshot file, or a directory to compare against the live source tree
+
+Options:
+      --json  Output JSON
+      --stat  Output summary counts only
+  -h, --help  Print help
+"""
