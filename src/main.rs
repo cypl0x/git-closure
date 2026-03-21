@@ -6,10 +6,11 @@ use clap_complete::{generate, shells};
 use serde::Serialize;
 
 use git_closure::{
-    build_snapshot_from_source, diff_snapshot_to_source, diff_snapshots, export_snapshot_as_nar,
-    fmt_snapshot_with_options, list_snapshot, materialize_snapshot, providers::ProviderKind,
-    render_snapshot, summarize_snapshot, verify_snapshot, BuildOptions, DiffEntry, FmtOptions,
-    GitClosureError, ListEntry, RenderFormat, SnapshotSummary,
+    build_snapshot_from_source, compile_source, diff_snapshot_to_source, diff_snapshots,
+    export_snapshot_as_nar, fmt_snapshot_with_options, list_snapshot, materialize_snapshot,
+    providers::ProviderKind, render_snapshot, summarize_snapshot, verify_snapshot, BuildOptions,
+    CompileFormat, DiffEntry, FmtOptions, GitClosureError, ListEntry, RenderFormat,
+    SnapshotSummary,
 };
 
 #[derive(Parser, Debug)]
@@ -120,6 +121,27 @@ enum Commands {
         shell: CompletionShell,
     },
     #[command(
+        about = "Compile a source into an artifact via the IR pipeline (gcl or nar)",
+        visible_alias = "C",
+        after_help = "PROVENANCE: compile does not read git metadata. \
+                      For git-aware snapshots with git-rev/git-branch, use `build`."
+    )]
+    Compile {
+        #[arg(help = "Source path or remote URL to compile")]
+        source: String,
+        #[arg(short, long, help = "Output file path")]
+        output: PathBuf,
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = CompileOutputFormat::Gcl,
+            help = "Output format"
+        )]
+        format: CompileOutputFormat,
+        #[arg(long, value_enum, default_value_t = BuildProvider::Auto)]
+        provider: BuildProvider,
+    },
+    #[command(
         about = "Export a snapshot to another archive format (currently: NAR)",
         visible_alias = "e",
         after_help = "METADATA LOSS: NAR does not store snapshot-hash, git-rev, git-branch, \
@@ -179,6 +201,21 @@ enum BuildProvider {
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum ExportFormat {
     Nar,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum CompileOutputFormat {
+    Gcl,
+    Nar,
+}
+
+impl From<CompileOutputFormat> for CompileFormat {
+    fn from(value: CompileOutputFormat) -> Self {
+        match value {
+            CompileOutputFormat::Gcl => CompileFormat::Gcl,
+            CompileOutputFormat::Nar => CompileFormat::Nar,
+        }
+    }
 }
 
 impl From<BuildProvider> for ProviderKind {
@@ -325,6 +362,14 @@ fn run() -> Result<(), GitClosureError> {
         }
         Commands::Completion { shell } => {
             print_completion(shell);
+        }
+        Commands::Compile {
+            source,
+            output,
+            format,
+            provider,
+        } => {
+            compile_source(&source, &output, format.into(), provider.into())?;
         }
         Commands::Export {
             snapshot,

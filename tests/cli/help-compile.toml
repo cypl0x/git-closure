@@ -1,0 +1,19 @@
+bin.name = "git-closure"
+args = ["compile", "--help"]
+status = "success"
+stdout = """
+Compile a source into an artifact via the IR pipeline (gcl or nar)
+
+Usage: git-closure compile [OPTIONS] --output <OUTPUT> <SOURCE>
+
+Arguments:
+  <SOURCE>  Source path or remote URL to compile
+
+Options:
+  -o, --output <OUTPUT>      Output file path
+      --format <FORMAT>      Output format [default: gcl] [possible values: gcl, nar]
+      --provider <PROVIDER>  [default: auto] [possible values: auto, local, git-clone, nix, github-api]
+  -h, --help                 Print help
+
+PROVENANCE: compile does not read git metadata. For git-aware snapshots with git-rev/git-branch, use `build`.
+"""
