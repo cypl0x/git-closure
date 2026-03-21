@@ -8,7 +8,8 @@ patterns. For sprint execution process and backlog discipline, also read
 
 `git-closure` is a Rust CLI/library for deterministic `.gcl` source snapshots.
 It supports building, verifying, diffing, formatting, rendering, summarizing,
-and materializing snapshots with strong integrity and path-safety guarantees.
+materializing, and exporting snapshots with strong integrity and path-safety
+guarantees.
 
 ## Current CLI Commands
 
@@ -20,10 +21,11 @@ and materializing snapshots with strong integrity and path-safety guarantees.
 - `fmt` (`f`)
 - `render` (`r`)
 - `summary` (`s`)
+- `export` (`e`) — export a snapshot to another archive format (currently: NAR)
 - `completion` (`c`)
 
-Deprecated/planned names like `explode`, `watch`, `query`, and `export` are not
-part of the current CLI surface.
+Deprecated/planned names like `explode`, `watch`, and `query` are not part of
+the current CLI surface.
 
 ## Module Graph
 
@@ -48,6 +50,8 @@ Core modules:
 - `src/snapshot/diff.rs` - structural snapshot diff model/algorithm
 - `src/snapshot/render.rs` - markdown/html/json report rendering
 - `src/snapshot/summary.rs` - aggregate snapshot metadata summary model
+- `src/snapshot/export.rs` - GCL→NAR export bridge (build_nar_tree, export_snapshot_as_nar)
+- `src/nar.rs` - NAR wire format writer (NarNode, write_nar; write-only, no reader)
 - `src/materialize.rs` - verify/materialize logic + path safety
 
 ## Testing Conventions
