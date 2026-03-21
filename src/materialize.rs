@@ -81,6 +81,10 @@ pub fn verify_snapshot_with_root(snapshot: &Path, root: &Path) -> Result<VerifyR
 /// `file-count`) and per-entry checks (`sha256`, `size`, path/mode validity,
 /// symlink target containment).
 ///
+/// Note: `file-count` consistency is enforced here (verify layer), not in
+/// `parse_snapshot` itself. This keeps parsing focused on syntax/shape and keeps
+/// semantic integrity checks centralized in verification entry points.
+///
 /// Symlink containment is evaluated against the same synthetic root used by
 /// [`verify_snapshot`]. Call [`verify_snapshot_with_root`] when a real output
 /// root is available and root-anchored containment semantics are required.

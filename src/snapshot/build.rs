@@ -324,6 +324,8 @@ fn parse_git_metadata_field_output(
 }
 
 fn git_metadata_warning_message(stderr: &[u8]) -> Option<String> {
+    // This heuristic depends on Git's current "not a git repository" wording.
+    // If upstream wording changes, this filter may need to be updated.
     let stderr = truncate_stderr(stderr);
     if stderr.is_empty() {
         return None;

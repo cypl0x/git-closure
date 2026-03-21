@@ -251,6 +251,8 @@ mod tests {
         let temp = TempDir::new().expect("create tempdir");
         let snapshot = temp.path().join("synthetic-prefix.gcl");
         let output_root = temp.path().join("output-root");
+        // `verify_snapshot_with_root` canonicalizes `root`, and canonicalize
+        // requires the path to already exist.
         fs::create_dir_all(&output_root).expect("create output root");
 
         let files = vec![SnapshotFile {
@@ -1599,6 +1601,8 @@ fn main() {
 "#;
         fs::write(src_dir.join("main.rs"), main_rs).expect("write main.rs");
 
+        // This smoke test compiles an external crate against the local workspace
+        // path dependency, so it assumes this workspace is currently compilable.
         let output = Command::new("cargo")
             .arg("check")
             .arg("--quiet")
