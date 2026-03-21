@@ -6,10 +6,10 @@ use clap_complete::{generate, shells};
 use serde::Serialize;
 
 use git_closure::{
-    build_snapshot_from_source, diff_snapshot_to_source, diff_snapshots, fmt_snapshot_with_options,
-    list_snapshot, materialize_snapshot, providers::ProviderKind, render_snapshot,
-    summarize_snapshot, verify_snapshot, BuildOptions, DiffEntry, FmtOptions, GitClosureError,
-    ListEntry, RenderFormat, SnapshotSummary,
+    build_snapshot_from_source, diff_snapshot_to_source, diff_snapshots, export_snapshot_as_nar,
+    fmt_snapshot_with_options, list_snapshot, materialize_snapshot, providers::ProviderKind,
+    render_snapshot, summarize_snapshot, verify_snapshot, BuildOptions, DiffEntry, FmtOptions,
+    GitClosureError, ListEntry, RenderFormat, SnapshotSummary,
 };
 
 #[derive(Parser, Debug)]
@@ -119,6 +119,27 @@ enum Commands {
         #[arg(help = "Shell to generate completions for")]
         shell: CompletionShell,
     },
+    #[command(
+        about = "Export a snapshot to another archive format (currently: NAR)",
+        visible_alias = "e",
+        after_help = "METADATA LOSS: NAR does not store snapshot-hash, git-rev, git-branch, \
+                      source-uri, or per-file sha256. Only file contents, symlink targets, and \
+                      the executable flag are preserved. Use the .gcl format for provenance \
+                      tracking."
+    )]
+    Export {
+        #[arg(help = "Snapshot file to export")]
+        snapshot: PathBuf,
+        #[arg(short, long, help = "Output file path (required; NAR is binary)")]
+        output: PathBuf,
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = ExportFormat::Nar,
+            help = "Export format (currently only 'nar' is supported)"
+        )]
+        format: ExportFormat,
+    },
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -153,6 +174,11 @@ enum BuildProvider {
     GitClone,
     Nix,
     GithubApi,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum ExportFormat {
+    Nar,
 }
 
 impl From<BuildProvider> for ProviderKind {
@@ -299,6 +325,13 @@ fn run() -> Result<(), GitClosureError> {
         }
         Commands::Completion { shell } => {
             print_completion(shell);
+        }
+        Commands::Export {
+            snapshot,
+            output,
+            format: _format, // NAR is the only format; field reserved for future extension
+        } => {
+            export_snapshot_as_nar(&snapshot, &output)?;
         }
     }
 
