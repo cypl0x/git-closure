@@ -13,7 +13,8 @@
       "mode": "644",
       "size": 1,
       "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
-      "symlink_target": null
+      "symlink_target": null,
+      "content": "x"
     }
   ]
 }

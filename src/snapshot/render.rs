@@ -2,12 +2,14 @@
 use std::fs;
 use std::path::Path;
 
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use base64::Engine;
 use serde::Serialize;
 
 use crate::utils::{io_error_with_path, sha256_prefix};
 
 use super::serial::parse_snapshot;
-use super::{ListEntry, Result, SnapshotHeader};
+use super::{Result, SnapshotFile, SnapshotHeader};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -28,28 +30,16 @@ pub enum RenderFormat {
 pub fn render_snapshot(snapshot: &Path, format: RenderFormat) -> Result<String> {
     let text = fs::read_to_string(snapshot).map_err(|err| io_error_with_path(err, snapshot))?;
     let (header, files) = parse_snapshot(&text)?;
-    let entries: Vec<ListEntry> = files
-        .into_iter()
-        .map(|f| ListEntry {
-            is_symlink: f.symlink_target.is_some(),
-            symlink_target: f.symlink_target,
-            sha256: f.sha256,
-            mode: f.mode,
-            size: f.size,
-            path: f.path,
-        })
-        .collect();
-
     match format {
-        RenderFormat::Markdown => Ok(render_markdown(&header, &entries)),
-        RenderFormat::Html => Ok(render_html(&header, &entries)),
-        RenderFormat::Json => Ok(render_json(&header, &entries)),
+        RenderFormat::Markdown => Ok(render_markdown(&header, &files)),
+        RenderFormat::Html => Ok(render_html(&header, &files)),
+        RenderFormat::Json => Ok(render_json(&header, &files)),
     }
 }
 
 // ── Markdown renderer ─────────────────────────────────────────────────────────
 
-fn render_markdown(header: &SnapshotHeader, entries: &[ListEntry]) -> String {
+fn render_markdown(header: &SnapshotHeader, files: &[SnapshotFile]) -> String {
     let mut out = String::new();
 
     out.push_str("# Snapshot Audit Report\n\n");
@@ -65,8 +55,8 @@ fn render_markdown(header: &SnapshotHeader, entries: &[ListEntry]) -> String {
         out.push_str(&format!("| Git branch | `{branch}` |\n"));
     }
 
-    let (regular_count, symlink_count) = count_entry_types(entries);
-    let total_bytes: u64 = entries.iter().map(|e| e.size).sum();
+    let (regular_count, symlink_count) = count_file_types(files);
+    let total_bytes: u64 = files.iter().map(|f| f.size).sum();
     out.push_str(&format!(
         "| Regular files | {regular_count} |\n| Symlinks | {symlink_count} |\n| Total bytes | {total_bytes} |\n"
     ));
@@ -75,21 +65,38 @@ fn render_markdown(header: &SnapshotHeader, entries: &[ListEntry]) -> String {
     out.push_str("| Path | Type | Mode | Size | SHA-256 (prefix) |\n");
     out.push_str("|---|---|---|---|---|\n");
 
-    for e in entries {
-        let entry_type = if e.is_symlink { "symlink" } else { "file" };
-        let sha256_display = if e.is_symlink {
-            format!("→ {}", md_escape(e.symlink_target.as_deref().unwrap_or("")))
+    for f in files {
+        let is_symlink = f.symlink_target.is_some();
+        let entry_type = if is_symlink { "symlink" } else { "file" };
+        let sha256_display = if is_symlink {
+            format!("→ {}", md_escape(f.symlink_target.as_deref().unwrap_or("")))
         } else {
-            format!("`{}`", sha256_prefix(&e.sha256))
+            format!("`{}`", sha256_prefix(&f.sha256))
         };
         out.push_str(&format!(
             "| `{}` | {} | {} | {} | {} |\n",
-            md_escape(&e.path),
+            md_escape(&f.path),
             entry_type,
-            e.mode,
-            e.size,
+            f.mode,
+            f.size,
             sha256_display
         ));
+    }
+
+    out.push_str("\n## File Contents\n");
+    for f in files {
+        if f.symlink_target.is_some() {
+            continue;
+        }
+        out.push_str(&format!("\n### `{}`\n\n", md_escape(&f.path)));
+        if f.encoding.as_deref() == Some("base64") {
+            out.push_str(&format!("```\n[binary content, {} bytes]\n```\n", f.size));
+        } else {
+            let text = std::str::from_utf8(&f.content)
+                .expect("non-base64 content must be valid UTF-8 (invariant violated)");
+            let lang = lang_hint(&f.path);
+            out.push_str(&format!("```{lang}\n{text}\n```\n"));
+        }
     }
 
     out
@@ -97,13 +104,13 @@ fn render_markdown(header: &SnapshotHeader, entries: &[ListEntry]) -> String {
 
 // ── HTML renderer ─────────────────────────────────────────────────────────────
 
-fn render_html(header: &SnapshotHeader, entries: &[ListEntry]) -> String {
+fn render_html(header: &SnapshotHeader, files: &[SnapshotFile]) -> String {
     let mut out = String::new();
 
     out.push_str("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n");
     out.push_str("<meta charset=\"UTF-8\">\n");
     out.push_str("<title>Snapshot Audit Report</title>\n");
-    out.push_str("<style>body{font-family:monospace;max-width:1200px;margin:2em auto;padding:0 1em}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ccc;padding:4px 8px;text-align:left}th{background:#f0f0f0}code{background:#f8f8f8;padding:2px 4px;border-radius:2px}</style>\n");
+    out.push_str("<style>body{font-family:monospace;max-width:1200px;margin:2em auto;padding:0 1em}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ccc;padding:4px 8px;text-align:left}th{background:#f0f0f0}code{background:#f8f8f8;padding:2px 4px;border-radius:2px}pre{background:#f8f8f8;padding:1em;overflow-x:auto;white-space:pre-wrap}</style>\n");
     out.push_str("</head>\n<body>\n");
     out.push_str("<h1>Snapshot Audit Report</h1>\n");
     out.push_str("<h2>Metadata</h2>\n<table>\n");
@@ -127,8 +134,8 @@ fn render_html(header: &SnapshotHeader, entries: &[ListEntry]) -> String {
             html_escape(branch)
         ));
     }
-    let (regular_count, symlink_count) = count_entry_types(entries);
-    let total_bytes: u64 = entries.iter().map(|e| e.size).sum();
+    let (regular_count, symlink_count) = count_file_types(files);
+    let total_bytes: u64 = files.iter().map(|f| f.size).sum();
     out.push_str(&format!(
         "<tr><th>Regular files</th><td>{regular_count}</td></tr>\n"
     ));
@@ -143,44 +150,78 @@ fn render_html(header: &SnapshotHeader, entries: &[ListEntry]) -> String {
     out.push_str("<h2>Files</h2>\n<table>\n");
     out.push_str("<thead><tr><th>Path</th><th>Type</th><th>Mode</th><th>Size</th><th>SHA-256 (prefix)</th></tr></thead>\n<tbody>\n");
 
-    for e in entries {
-        let entry_type = if e.is_symlink { "symlink" } else { "file" };
-        let sha256_display = if e.is_symlink {
+    for f in files {
+        let is_symlink = f.symlink_target.is_some();
+        let entry_type = if is_symlink { "symlink" } else { "file" };
+        let sha256_display = if is_symlink {
             format!(
                 "→ {}",
-                html_escape(e.symlink_target.as_deref().unwrap_or(""))
+                html_escape(f.symlink_target.as_deref().unwrap_or(""))
             )
         } else {
-            format!("<code>{}</code>", sha256_prefix(&e.sha256))
+            format!("<code>{}</code>", sha256_prefix(&f.sha256))
         };
         out.push_str(&format!(
             "<tr><td><code>{}</code></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>\n",
-            html_escape(&e.path),
+            html_escape(&f.path),
             entry_type,
-            e.mode,
-            e.size,
+            f.mode,
+            f.size,
             sha256_display
         ));
     }
-    out.push_str("</tbody></table>\n</body>\n</html>\n");
+    out.push_str("</tbody></table>\n");
+
+    out.push_str("<h2>File Contents</h2>\n");
+    for f in files {
+        if f.symlink_target.is_some() {
+            continue;
+        }
+        out.push_str(&format!("<h3><code>{}</code></h3>\n", html_escape(&f.path)));
+        if f.encoding.as_deref() == Some("base64") {
+            out.push_str(&format!("<pre>[binary content, {} bytes]</pre>\n", f.size));
+        } else {
+            let text = std::str::from_utf8(&f.content)
+                .expect("non-base64 content must be valid UTF-8 (invariant violated)");
+            out.push_str(&format!("<pre><code>{}</code></pre>\n", html_escape(text)));
+        }
+    }
+
+    out.push_str("</body>\n</html>\n");
     out
 }
 
 // ── JSON renderer ─────────────────────────────────────────────────────────────
 
-fn render_json(header: &SnapshotHeader, entries: &[ListEntry]) -> String {
-    let (regular_count, symlink_count) = count_entry_types(entries);
-    let total_bytes: u64 = entries.iter().map(|e| e.size).sum();
+fn render_json(header: &SnapshotHeader, files: &[SnapshotFile]) -> String {
+    let (regular_count, symlink_count) = count_file_types(files);
+    let total_bytes: u64 = files.iter().map(|f| f.size).sum();
 
-    let files: Vec<RenderJsonFile<'_>> = entries
+    let json_files: Vec<RenderJsonFile<'_>> = files
         .iter()
-        .map(|entry| RenderJsonFile {
-            path: entry.path.as_str(),
-            entry_type: if entry.is_symlink { "symlink" } else { "file" },
-            mode: entry.mode.as_str(),
-            size: entry.size,
-            sha256: entry.sha256.as_str(),
-            symlink_target: entry.symlink_target.as_deref(),
+        .map(|f| {
+            let is_symlink = f.symlink_target.is_some();
+            let content = if is_symlink {
+                None
+            } else if f.encoding.as_deref() == Some("base64") {
+                Some(BASE64_STANDARD.encode(&f.content))
+            } else {
+                Some(
+                    std::str::from_utf8(&f.content)
+                        .expect("non-base64 content must be valid UTF-8 (invariant violated)")
+                        .to_string(),
+                )
+            };
+            RenderJsonFile {
+                path: f.path.as_str(),
+                entry_type: if is_symlink { "symlink" } else { "file" },
+                mode: f.mode.as_str(),
+                size: f.size,
+                sha256: f.sha256.as_str(),
+                symlink_target: f.symlink_target.as_deref(),
+                encoding: f.encoding.as_deref(),
+                content,
+            }
         })
         .collect();
 
@@ -192,7 +233,7 @@ fn render_json(header: &SnapshotHeader, entries: &[ListEntry]) -> String {
         regular_file_count: regular_count,
         symlink_count,
         total_bytes,
-        files,
+        files: json_files,
     };
 
     let mut json = serde_json::to_string_pretty(&payload).expect("serialize render JSON");
@@ -202,9 +243,36 @@ fn render_json(header: &SnapshotHeader, entries: &[ListEntry]) -> String {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn count_entry_types(entries: &[ListEntry]) -> (usize, usize) {
-    let symlinks = entries.iter().filter(|e| e.is_symlink).count();
-    (entries.len() - symlinks, symlinks)
+fn count_file_types(files: &[SnapshotFile]) -> (usize, usize) {
+    let symlinks = files.iter().filter(|f| f.symlink_target.is_some()).count();
+    (files.len() - symlinks, symlinks)
+}
+
+/// Returns a Markdown fenced-code-block language hint for a given file path.
+/// Returns an empty string for unrecognised extensions (produces a plain fence).
+fn lang_hint(path: &str) -> &'static str {
+    let ext = path.rsplit('.').next().unwrap_or("");
+    match ext {
+        "rs" => "rust",
+        "py" => "python",
+        "js" | "mjs" | "cjs" => "javascript",
+        "ts" | "mts" | "cts" => "typescript",
+        "go" => "go",
+        "c" | "h" => "c",
+        "cpp" | "cc" | "cxx" | "hpp" => "cpp",
+        "toml" => "toml",
+        "json" => "json",
+        "yaml" | "yml" => "yaml",
+        "sh" | "bash" => "bash",
+        "nix" => "nix",
+        "md" => "markdown",
+        "html" | "htm" => "html",
+        "css" => "css",
+        "sql" => "sql",
+        "java" => "java",
+        "rb" => "ruby",
+        _ => "",
+    }
 }
 
 fn html_escape(s: &str) -> String {
@@ -239,6 +307,12 @@ struct RenderJsonFile<'a> {
     size: u64,
     sha256: &'a str,
     symlink_target: Option<&'a str>,
+    /// Decoded text content for UTF-8 files; base64-encoded bytes for binary
+    /// files; `null` for symlinks.
+    content: Option<String>,
+    /// Present and set to `"base64"` only for binary files.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    encoding: Option<&'a str>,
 }
 
 #[cfg(test)]
@@ -458,6 +532,187 @@ mod tests {
         assert!(
             markdown.contains("→ \\`etc/passwd\\`"),
             "markdown must escape backticks in symlink targets"
+        );
+    }
+
+    // ── Content rendering tests ───────────────────────────────────────────────
+
+    #[test]
+    fn render_markdown_includes_file_contents() {
+        let dir = TempDir::new().unwrap();
+        let files = vec![text_file("src/main.rs", "fn main() {}")];
+        let snap = write_snap(&dir, &files, None, None);
+
+        let output = render_snapshot(&snap, RenderFormat::Markdown).unwrap();
+        assert!(
+            output.contains("## File Contents"),
+            "markdown must have a File Contents section; got:\n{output}"
+        );
+        assert!(
+            output.contains("fn main() {}"),
+            "markdown must include the file's text content; got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn render_markdown_multiline_content_uses_real_newlines() {
+        let dir = TempDir::new().unwrap();
+        let files = vec![text_file("a.txt", "line1\nline2")];
+        let snap = write_snap(&dir, &files, None, None);
+
+        let output = render_snapshot(&snap, RenderFormat::Markdown).unwrap();
+        // Content must contain actual newlines, not the escape sequence
+        assert!(
+            output.contains("line1\nline2"),
+            "rendered content must use real newlines, not \\n escapes; got:\n{output}"
+        );
+        assert!(
+            !output.contains("line1\\nline2"),
+            "rendered content must not contain literal backslash-n; got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn render_markdown_binary_file_shows_note() {
+        let dir = TempDir::new().unwrap();
+        let binary_bytes = vec![0xFF_u8, 0xFE, 0x00, 0x01];
+        let sha = sha256_hex(&binary_bytes);
+        let bin_file = SnapshotFile {
+            path: "binary.bin".to_string(),
+            sha256: sha,
+            mode: "644".to_string(),
+            size: binary_bytes.len() as u64,
+            encoding: Some("base64".to_string()),
+            symlink_target: None,
+            content: binary_bytes,
+        };
+        let snap = write_snap(&dir, &[bin_file], None, None);
+
+        let output = render_snapshot(&snap, RenderFormat::Markdown).unwrap();
+        assert!(
+            output.contains("[binary"),
+            "markdown must note binary content rather than displaying raw bytes; got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn render_html_includes_file_contents() {
+        let dir = TempDir::new().unwrap();
+        let files = vec![text_file("x.txt", "hello world")];
+        let snap = write_snap(&dir, &files, None, None);
+
+        let output = render_snapshot(&snap, RenderFormat::Html).unwrap();
+        assert!(
+            output.contains("hello world"),
+            "html must include file content; got:\n{output}"
+        );
+        assert!(
+            output.contains("<pre>"),
+            "html must wrap content in <pre> block; got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn render_html_content_is_html_escaped() {
+        let dir = TempDir::new().unwrap();
+        let files = vec![text_file("a.html", "<h1>Hello & World</h1>")];
+        let snap = write_snap(&dir, &files, None, None);
+
+        let output = render_snapshot(&snap, RenderFormat::Html).unwrap();
+        assert!(
+            output.contains("&lt;h1&gt;Hello &amp; World&lt;/h1&gt;"),
+            "html must escape content characters; got:\n{output}"
+        );
+        assert!(
+            !output.contains("<h1>Hello"),
+            "html must not contain unescaped content tags; got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn render_json_includes_content_field() {
+        let dir = TempDir::new().unwrap();
+        let files = vec![text_file("a.txt", "hello")];
+        let snap = write_snap(&dir, &files, None, None);
+
+        let output = render_snapshot(&snap, RenderFormat::Json).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&output).expect("json must parse");
+        let files = value["files"].as_array().expect("files must be array");
+        assert_eq!(
+            files[0]["content"],
+            serde_json::Value::from("hello"),
+            "json must include content field with the file text"
+        );
+    }
+
+    #[test]
+    fn render_markdown_symlink_omitted_from_contents_section() {
+        let dir = TempDir::new().unwrap();
+        let files = vec![
+            text_file("a.txt", "real content"),
+            symlink_file("link", "a.txt"),
+        ];
+        let snap = write_snap(&dir, &files, None, None);
+
+        let output = render_snapshot(&snap, RenderFormat::Markdown).unwrap();
+        // The symlink must appear in the Files table but not as a contents heading
+        assert!(
+            output.contains("`link`"),
+            "symlink must appear in file table"
+        );
+        assert!(
+            !output.contains("### `link`"),
+            "symlink must not have a contents heading"
+        );
+        // The regular file must appear in both sections
+        assert!(
+            output.contains("### `a.txt`"),
+            "regular file must have contents heading"
+        );
+        assert!(
+            output.contains("real content"),
+            "regular file content must be rendered"
+        );
+    }
+
+    #[test]
+    fn render_json_symlink_content_is_null() {
+        let dir = TempDir::new().unwrap();
+        let files = vec![
+            text_file("a.txt", "has content"),
+            symlink_file("link", "target.txt"),
+        ];
+        let snap = write_snap(&dir, &files, None, None);
+
+        let output = render_snapshot(&snap, RenderFormat::Json).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&output).expect("json must parse");
+        let files = value["files"].as_array().expect("files must be array");
+
+        // Regular file must have non-null content
+        let regular = files
+            .iter()
+            .find(|e| e["path"].as_str() == Some("a.txt"))
+            .unwrap();
+        assert_eq!(
+            regular["content"],
+            serde_json::Value::from("has content"),
+            "regular file must have content field"
+        );
+
+        // Symlink must have null content (field present, value null)
+        let symlink = files
+            .iter()
+            .find(|e| e["path"].as_str() == Some("link"))
+            .unwrap();
+        assert_eq!(
+            symlink["content"],
+            serde_json::Value::Null,
+            "symlink content must be null"
+        );
+        // Confirm the field is explicitly serialized (not merely absent)
+        assert!(
+            output.contains("\"content\": null"),
+            "json must explicitly emit content: null for symlinks; got:\n{output}"
         );
     }
 }
