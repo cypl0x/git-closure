@@ -1044,7 +1044,13 @@ mod tests {
         };
 
         match err {
-            GitClosureError::CommandExitFailure { stderr, .. } => {
+            GitClosureError::CommandExitFailure {
+                command, stderr, ..
+            } => {
+                assert_eq!(
+                    command, "git",
+                    "clone failure must identify the git command"
+                );
                 assert!(!stderr.is_empty(), "stderr payload should be captured");
                 assert!(
                     stderr.contains("git-clone"),
