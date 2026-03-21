@@ -24,6 +24,7 @@
 //! | [`parse_snapshot_with_limits`] | Parse snapshot text with resource limits for untrusted input |
 //! | [`summarize_snapshot`] | Compute aggregate snapshot metadata |
 //! | [`export_snapshot_as_nar`] | Export a snapshot as a binary NAR archive |
+//! | [`compile_source`] | Compile a source into a `.gcl` or NAR artifact via the IR pipeline |
 //!
 //! | Type | Description |
 //! |---|---|
@@ -46,6 +47,8 @@
 //! | [`ir::FileNode`] | A regular file node in the IR |
 //! | [`ir::SymlinkNode`] | A symbolic link node in the IR |
 //! | [`ir::ClosureId`] | Content-addressed identity of a concrete `Closure` |
+//! | [`CompileFormat`] | Output format selector for [`compile_source`] |
+//! | [`GclBackend`] | Artifact backend that writes a `Closure` as a `.gcl` snapshot |
 
 // ── Module declarations ───────────────────────────────────────────────────────
 
@@ -56,6 +59,7 @@ pub mod providers;
 pub mod source;
 
 pub(crate) mod backends;
+pub(crate) mod compile;
 pub(crate) mod gcl;
 pub(crate) mod git;
 pub(crate) mod materialize;
@@ -63,6 +67,8 @@ pub(crate) mod utils;
 
 // ── Public re-exports ─────────────────────────────────────────────────────────
 
+pub use backends::gcl::GclBackend;
+pub use compile::{compile_source, CompileFormat};
 pub use error::GitClosureError;
 pub use gcl::build::{
     build_snapshot, build_snapshot_from_provider, build_snapshot_from_source,
