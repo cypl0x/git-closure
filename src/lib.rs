@@ -15,7 +15,7 @@
 //! | [`materialize_snapshot_with_options`] | Restore with explicit policy options |
 //! | [`diff_snapshots`] | Compare two snapshots and return structured differences |
 //! | [`diff_snapshot_to_source`] | Compare a snapshot against a live source directory |
-//! | [`render_snapshot`] | Render a snapshot as Markdown, HTML, or JSON |
+//! | [`render_snapshot`] | Render a snapshot as text, Markdown, HTML, or JSON |
 //! | [`fmt_snapshot`] | Canonicalize snapshot formatting |
 //! | [`fmt_snapshot_with_options`] | Canonicalize formatting with explicit options |
 //! | [`list_snapshot`] | List snapshot entries from a file path |

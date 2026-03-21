@@ -15,7 +15,7 @@ emailed, archived, diffed, and materialized back into a filesystem tree.
 - `list` (`l`) - list recorded entries
 - `diff` (`d`) - compare snapshots or snapshot-vs-directory (`text`, `--json`, `--stat`)
 - `fmt` (`f`) - canonicalize snapshot formatting
-- `render` (`r`) - render Markdown, HTML, or JSON reports
+- `render` (`r`) - render text, Markdown, HTML, or JSON reports (default: `text`)
 - `summary` (`s`) - print compact snapshot metadata (`text` or `--json`)
 - `completion` (`c`) - generate shell completions (bash/zsh)
 
@@ -191,43 +191,58 @@ git-closure diff old.gcl ./src
 ## render Formats
 
 ```bash
+# Default: plain text for terminal reading
+git-closure render repo.gcl
+
+# Explicit formats
+git-closure render repo.gcl --format text
 git-closure render repo.gcl --format markdown
 git-closure render repo.gcl --format html
 git-closure render repo.gcl --format json -o report.json
 ```
 
-- formats: `markdown`, `html`, `json`
+- formats: `text` (default), `markdown`, `html`, `json`
 - default output: stdout
 - optional file output: `-o/--output`
 
-Each rendered report includes:
-- document metadata (snapshot hash, file count, git revision/branch when present)
-- a file inventory table (path, type, mode, size, SHA-256 prefix)
-- full file contents for all regular files (binary files noted as `[binary content, N bytes]`)
+Each rendered report mirrors the `.gcl` structure: snapshot metadata at the top,
+then one entry per file/symlink in the same order as the snapshot.
+
+**`text`** (default): plain key-value header, then one entry per file separated
+by `────` lines. Content rendered as-is with real newlines. Designed for terminal
+reading, piping to `less`, or use as a base for future ANSI/syntax-highlighted output.
+
+**`markdown` / `html`**: flat per-file headings (`##` / `<section>`), inline
+metadata, fenced code blocks / `<pre><code>` for content. No inventory table.
+
+**`json`**: structured flat `files` array with all metadata and content fields.
 
 Symlink rendering policy:
 
-- Markdown/HTML: entry type shown as `symlink`, digest column shows `→ <target>`, no content block emitted
-- JSON: `type=symlink`, `mode="120000"`, `size=0`, `sha256=""`, `symlink_target` populated, `content=null`
+- `text`: `type: symlink → target` inline, no content block
+- `markdown`: `` ## `path` → `target` `` heading, labelled `symlink`
+- `html`: `<code>path</code> → <code>target</code>` heading, labelled `symlink`
+- `json`: `type=symlink`, `mode="120000"`, `size=0`, `sha256=""`,
+  `symlink_target` populated, `content=null`
 
 ### Pandoc integration
 
-The Markdown output includes a YAML front-matter block (title, snapshot-hash,
-file-count, and git metadata when present). This lets pandoc convert the report
-to any of its ~50 output formats without any additional flags:
+The `--pandoc` flag (only meaningful with `--format markdown`) prepends a YAML
+front-matter block so that pandoc can populate document title, git revision, and
+other metadata when converting to PDF, EPUB, DOCX, etc.:
 
 ```bash
 # PDF (requires a LaTeX distribution)
-git-closure render repo.gcl --format markdown | pandoc -o report.pdf
+git-closure render repo.gcl --format markdown --pandoc | pandoc -o report.pdf
 
 # EPUB e-book
-git-closure render repo.gcl --format markdown | pandoc -o report.epub
+git-closure render repo.gcl --format markdown --pandoc | pandoc -o report.epub
 
 # AsciiDoc, DOCX, ODT, RTF, …
-git-closure render repo.gcl --format markdown | pandoc -t asciidoc
-git-closure render repo.gcl --format markdown | pandoc -o report.docx
+git-closure render repo.gcl --format markdown --pandoc | pandoc -t asciidoc
+git-closure render repo.gcl --format markdown --pandoc | pandoc -o report.docx
 
-# Terminal output with syntax highlighting via bat
+# Terminal output with syntax highlighting (--pandoc not needed for bat)
 git-closure render repo.gcl --format markdown | bat --language markdown
 ```
 
