@@ -17,6 +17,7 @@ emailed, archived, diffed, and materialized back into a filesystem tree.
 - `fmt` (`f`) - canonicalize snapshot formatting
 - `render` (`r`) - render text, Markdown, HTML, or JSON reports (default: `text`)
 - `summary` (`s`) - print compact snapshot metadata (`text` or `--json`)
+- `export` (`e`) - export a snapshot to another archive format (currently: NAR)
 - `completion` (`c`) - generate shell completions (bash/zsh)
 
 ## Quick Start
@@ -256,6 +257,50 @@ git-closure summary repo.gcl --json
 Summary includes snapshot hash, entry counts, total bytes, git metadata, and
 top-5 largest regular files.
 
+## export — NAR Archive Export
+
+`export` converts a `.gcl` snapshot to a binary NAR (Nix ARchive) file.
+NAR is the deterministic archive format used by the Nix package manager.
+This is an **evaluation experiment** — the `.gcl` format remains canonical.
+
+```bash
+git-closure export repo.gcl --output repo.nar
+git-closure export repo.gcl -o repo.nar           # short flag
+```
+
+The `--output` / `-o` flag is required; NAR is binary and writing to stdout
+would corrupt terminals.
+
+### Metadata loss
+
+NAR is a pure filesystem tree archive with no provenance fields.
+The following `.gcl` fields are **silently dropped** during export:
+
+| Dropped field | Reason |
+|---|---|
+| `snapshot-hash` | no NAR equivalent |
+| `git-rev`, `git-branch` | no NAR equivalent |
+| `source-uri`, `source-provider` | no NAR equivalent |
+| per-file `sha256` | not stored in NAR (re-computable from content) |
+| per-file `size` | implicit in NAR content length |
+| full Unix mode string | NAR stores only executable vs non-executable |
+
+**Preserved:** file contents, symlink targets, executable flag (any execute bit
+in the octal mode → `TOK_EXE`; otherwise `TOK_REG`). This matches Nix's own
+semantics.
+
+### NAR output is deterministic
+
+The same `.gcl` snapshot always produces the same NAR bytes.
+Directory entries are written in strictly ascending lexicographic order
+(guaranteed by `BTreeMap`), satisfying the NAR wire format requirement.
+
+### No Nix store path compatibility
+
+This command produces a valid NAR byte stream but does **not** compute a Nix
+store hash.  The output is not a Nix store path and cannot be registered in a
+Nix store without independent content-addressing.
+
 ## Exit Codes
 
 - `0` - success / no semantic differences
@@ -280,6 +325,7 @@ Byte-level format stability is locked by committed fixtures:
 
 - `tests/fixtures/simple.gcl` (canonical snapshot bytes)
 - `tests/fixtures/simple.render.json` (render JSON surface)
+- `tests/fixtures/simple.nar` (NAR export of `simple.gcl`; validated by `nix nar ls`)
 
 Intentional format changes must update fixtures in the same commit with an
 explicit rationale.
@@ -308,8 +354,8 @@ nix shell nixpkgs#cargo-fuzz -c cargo fuzz run fuzz_lexical_normalize
 
 ## Roadmap
 
-- v0.1 (current): build/materialize/verify/list/diff/fmt/render/summary/completion
-- post-v0.1 [planned]: richer remote providers, additional render/export targets,
+- v0.1 (current): build/materialize/verify/list/diff/fmt/render/summary/export/completion
+- post-v0.1 [planned]: richer remote providers, NAR import/round-trip,
   and further performance/security hardening
 
 Commands like `query` and `watch` are not part of the current shipped CLI.
