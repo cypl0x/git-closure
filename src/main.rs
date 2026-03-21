@@ -91,14 +91,19 @@ enum Commands {
         repair_hash: bool,
     },
     #[command(
-        about = "Render a snapshot as a Markdown, HTML, or JSON audit report",
+        about = "Render a snapshot as a human-readable report (text, Markdown, HTML, or JSON)",
         visible_alias = "r"
     )]
     Render {
         #[arg(help = "Snapshot file to render")]
         snapshot: PathBuf,
-        #[arg(long, value_enum, default_value_t = ReportFormat::Markdown)]
+        #[arg(long, value_enum, default_value_t = ReportFormat::Text)]
         format: ReportFormat,
+        #[arg(
+            long,
+            help = "Prepend YAML front matter for pandoc (only with --format markdown)"
+        )]
+        pandoc: bool,
         #[arg(short, long, help = "Write output to file instead of stdout")]
         output: Option<PathBuf>,
     },
@@ -118,15 +123,17 @@ enum Commands {
 
 #[derive(Clone, Debug, ValueEnum)]
 enum ReportFormat {
+    Text,
     Markdown,
     Html,
     Json,
 }
 
-impl From<ReportFormat> for RenderFormat {
-    fn from(value: ReportFormat) -> Self {
-        match value {
-            ReportFormat::Markdown => RenderFormat::Markdown,
+impl ReportFormat {
+    fn into_render_format(self, pandoc: bool) -> RenderFormat {
+        match self {
+            ReportFormat::Text => RenderFormat::Text,
+            ReportFormat::Markdown => RenderFormat::Markdown { pandoc },
             ReportFormat::Html => RenderFormat::Html,
             ReportFormat::Json => RenderFormat::Json,
         }
@@ -272,9 +279,10 @@ fn run() -> Result<(), GitClosureError> {
         Commands::Render {
             snapshot,
             format,
+            pandoc,
             output,
         } => {
-            let rendered = render_snapshot(&snapshot, format.into())?;
+            let rendered = render_snapshot(&snapshot, format.into_render_format(pandoc))?;
             if let Some(path) = output {
                 std::fs::write(path, rendered.as_bytes())?;
             } else {
