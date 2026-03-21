@@ -29,9 +29,24 @@ use std::path::Path;
 use crate::error::GitClosureError;
 use crate::ir::{Closure, ClosureNode};
 use crate::nar::{write_nar, NarNode};
-use crate::snapshot::export::is_executable;
 
 use super::{ArtifactBackend, Result};
+
+/// Return `true` if the octal mode string indicates an executable file.
+///
+/// Any execute bit (owner, group, or other) causes the file to be serialized
+/// with `TOK_EXE`.  This matches Nix's own semantics: only the presence or
+/// absence of any execute permission is preserved; specific bit patterns are
+/// not representable in NAR.
+///
+/// Symlinks (mode `"120000"`) must be identified and handled before calling
+/// this function; they never reach this predicate.
+pub(crate) fn is_executable(mode: &str) -> bool {
+    // git uses both short ("644", "755") and long ("100644", "100755") forms.
+    u32::from_str_radix(mode, 8)
+        .map(|m| (m & 0o111) != 0)
+        .unwrap_or(false)
+}
 
 /// NAR artifact backend.
 ///
@@ -172,6 +187,38 @@ mod tests {
             })],
             provenance: vec![],
         }
+    }
+
+    // ── is_executable ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn is_executable_mode_644_is_false() {
+        assert!(!is_executable("100644"), "100644 must not be executable");
+        assert!(!is_executable("644"), "644 must not be executable");
+    }
+
+    #[test]
+    fn is_executable_mode_755_is_true() {
+        assert!(is_executable("100755"), "100755 must be executable");
+        assert!(is_executable("755"), "755 must be executable");
+        assert!(is_executable("0755"), "0755 must be executable");
+    }
+
+    #[test]
+    fn is_executable_mode_111_only_execute_bits() {
+        assert!(is_executable("111"), "pure execute bits must be executable");
+    }
+
+    #[test]
+    fn is_executable_invalid_mode_returns_false_not_panic() {
+        assert!(
+            !is_executable("invalid"),
+            "unparsable mode must return false, not panic"
+        );
+        assert!(
+            !is_executable(""),
+            "empty mode must return false, not panic"
+        );
     }
 
     // ── NarBackend::write ──────────────────────────────────────────────────────
