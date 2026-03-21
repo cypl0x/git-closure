@@ -790,6 +790,64 @@ mod tests {
     use std::time::Duration;
 
     static TARBALL_LIMIT_ENV_LOCK: Mutex<()> = Mutex::new(());
+    const TARBALL_LIMIT_ENV: &str = "GCL_GITHUB_TARBALL_MAX_BYTES";
+
+    fn lock_tarball_limit_env() -> std::sync::MutexGuard<'static, ()> {
+        match TARBALL_LIMIT_ENV_LOCK.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    struct TarballLimitEnvOverride {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        previous: Option<String>,
+    }
+
+    impl TarballLimitEnvOverride {
+        fn set_for_test(value: &str) -> Self {
+            let lock = lock_tarball_limit_env();
+            let previous = std::env::var(TARBALL_LIMIT_ENV).ok();
+            std::env::set_var(TARBALL_LIMIT_ENV, value);
+            Self {
+                _lock: lock,
+                previous,
+            }
+        }
+    }
+
+    struct TarballLimitEnvRestore {
+        previous: Option<String>,
+    }
+
+    impl TarballLimitEnvRestore {
+        fn capture() -> Self {
+            let _lock = lock_tarball_limit_env();
+            let previous = std::env::var(TARBALL_LIMIT_ENV).ok();
+            Self { previous }
+        }
+    }
+
+    impl Drop for TarballLimitEnvRestore {
+        fn drop(&mut self) {
+            let _lock = lock_tarball_limit_env();
+            if let Some(previous) = &self.previous {
+                std::env::set_var(TARBALL_LIMIT_ENV, previous);
+            } else {
+                std::env::remove_var(TARBALL_LIMIT_ENV);
+            }
+        }
+    }
+
+    impl Drop for TarballLimitEnvOverride {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.previous {
+                std::env::set_var(TARBALL_LIMIT_ENV, previous);
+            } else {
+                std::env::remove_var(TARBALL_LIMIT_ENV);
+            }
+        }
+    }
 
     fn make_gzipped_tar(entries: &[(&str, &[u8])]) -> Vec<u8> {
         let mut gz = GzEncoder::new(Vec::new(), Compression::default());
@@ -807,6 +865,45 @@ mod tests {
             builder.finish().expect("finish tar builder");
         }
         gz.finish().expect("finish gzip stream")
+    }
+
+    #[test]
+    fn tarball_limit_env_override_restores_previous_value_on_drop() {
+        let _restore = TarballLimitEnvRestore::capture();
+        let _env_guard = lock_tarball_limit_env();
+        std::env::remove_var(TARBALL_LIMIT_ENV);
+        drop(_env_guard);
+
+        {
+            let _env = TarballLimitEnvOverride::set_for_test("8");
+            assert_eq!(std::env::var(TARBALL_LIMIT_ENV).as_deref(), Ok("8"));
+        }
+
+        let _env_guard = lock_tarball_limit_env();
+        assert!(
+            std::env::var(TARBALL_LIMIT_ENV).is_err(),
+            "override guard must remove env var when no previous value exists"
+        );
+    }
+
+    #[test]
+    fn tarball_limit_env_override_restores_previous_value_after_panic() {
+        let _restore = TarballLimitEnvRestore::capture();
+        let _env_guard = lock_tarball_limit_env();
+        std::env::remove_var(TARBALL_LIMIT_ENV);
+        drop(_env_guard);
+
+        let panic = std::panic::catch_unwind(|| {
+            let _env = TarballLimitEnvOverride::set_for_test("16");
+            panic!("simulated panic while env override is active");
+        });
+        assert!(panic.is_err(), "test must panic to validate unwind cleanup");
+
+        let _env_guard = lock_tarball_limit_env();
+        assert!(
+            std::env::var(TARBALL_LIMIT_ENV).is_err(),
+            "override guard must remove env var after unwind when no previous value exists"
+        );
     }
 
     #[test]
@@ -1073,6 +1170,7 @@ mod tests {
 
     #[test]
     fn github_api_download_follows_redirects() {
+        let _env_guard = lock_tarball_limit_env();
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
         let addr = listener.local_addr().expect("listener addr");
         let payload = b"redirect-ok".to_vec();
@@ -1130,8 +1228,7 @@ mod tests {
 
     #[test]
     fn github_api_download_rejects_content_length_over_limit() {
-        let _env_guard = TARBALL_LIMIT_ENV_LOCK.lock().expect("lock env mutation");
-        std::env::set_var("GCL_GITHUB_TARBALL_MAX_BYTES", "8");
+        let _env = TarballLimitEnvOverride::set_for_test("8");
 
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
         let addr = listener.local_addr().expect("listener addr");
@@ -1146,7 +1243,6 @@ mod tests {
 
         let result =
             super::download_tarball_url(&format!("http://{addr}/tarball"), "owner/repo@HEAD", None);
-        std::env::remove_var("GCL_GITHUB_TARBALL_MAX_BYTES");
         server.join().expect("join test server");
 
         let err = result.expect_err("content-length over configured limit must fail");
@@ -1159,8 +1255,7 @@ mod tests {
 
     #[test]
     fn github_api_download_rejects_stream_over_limit() {
-        let _env_guard = TARBALL_LIMIT_ENV_LOCK.lock().expect("lock env mutation");
-        std::env::set_var("GCL_GITHUB_TARBALL_MAX_BYTES", "16");
+        let _env = TarballLimitEnvOverride::set_for_test("16");
 
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
         let addr = listener.local_addr().expect("listener addr");
@@ -1183,7 +1278,6 @@ mod tests {
 
         let result =
             super::download_tarball_url(&format!("http://{addr}/stream"), "owner/repo@HEAD", None);
-        std::env::remove_var("GCL_GITHUB_TARBALL_MAX_BYTES");
         server.join().expect("join test server");
 
         let err = result.expect_err("stream over configured limit must fail");
