@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use git_closure::{
     build_snapshot_from_source, diff_snapshot_to_source, diff_snapshots, fmt_snapshot_with_options,
-    list_snapshot, materialize_snapshot, providers::ProviderKind, render_snapshot, sha256_prefix,
+    list_snapshot, materialize_snapshot, providers::ProviderKind, render_snapshot,
     summarize_snapshot, verify_snapshot, BuildOptions, DiffEntry, FmtOptions, GitClosureError,
     ListEntry, RenderFormat, SnapshotSummary,
 };
@@ -299,6 +299,12 @@ fn run() -> Result<(), GitClosureError> {
 
 fn should_diff_against_source(right: &Path) -> bool {
     right.is_dir()
+}
+
+// Local alias for utils::sha256_prefix; the library version cannot be
+// accessed from the binary crate without a public re-export.
+fn sha256_prefix(sha256: &str) -> &str {
+    &sha256[..sha256.len().min(16)]
 }
 
 // ── Output helpers ────────────────────────────────────────────────────────────
