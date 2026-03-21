@@ -430,12 +430,6 @@ enum DiffJsonEntry {
     },
 }
 
-// Exhaustive match — the compiler enforces coverage when new DiffEntry variants are added.
-// Implemented in DiffEntry::stable_variant_name within the defining crate.
-fn stable_diff_variant_name(entry: &DiffEntry) -> &'static str {
-    entry.stable_variant_name()
-}
-
 fn diff_entries_json(entries: &[DiffEntry]) -> String {
     let payload: Vec<DiffJsonEntry> = entries
         .iter()
@@ -474,7 +468,7 @@ fn diff_entries_json(entries: &[DiffEntry]) -> String {
                 new_target: new_target.clone(),
             },
             _ => DiffJsonEntry::Unknown {
-                variant_name: stable_diff_variant_name(entry).to_string(),
+                variant_name: entry.stable_variant_name().to_string(),
             },
         })
         .collect();
@@ -773,9 +767,9 @@ mod tests {
 
         for (idx, (entry, expected_type)) in cases.iter().enumerate() {
             assert_eq!(
-                super::stable_diff_variant_name(entry),
+                entry.stable_variant_name(),
                 *expected_type,
-                "stable variant mapping should stay aligned with expected type strings"
+                "DiffEntry::stable_variant_name must align with expected type strings"
             );
             assert_eq!(
                 arr[idx].get("type"),
