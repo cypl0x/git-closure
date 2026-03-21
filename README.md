@@ -200,6 +200,27 @@ git-closure render repo.gcl --format json -o report.json
 - default output: stdout
 - optional file output: `-o/--output`
 
+### Pandoc integration
+
+The Markdown output includes a YAML front-matter block (title, snapshot-hash,
+file-count, and git metadata when present). This lets pandoc convert the report
+to any of its ~50 output formats without any additional flags:
+
+```bash
+# PDF (requires a LaTeX distribution)
+git-closure render repo.gcl --format markdown | pandoc -o report.pdf
+
+# EPUB e-book
+git-closure render repo.gcl --format markdown | pandoc -o report.epub
+
+# AsciiDoc, DOCX, ODT, RTF, …
+git-closure render repo.gcl --format markdown | pandoc -t asciidoc
+git-closure render repo.gcl --format markdown | pandoc -o report.docx
+
+# Terminal output with syntax highlighting via bat
+git-closure render repo.gcl --format markdown | bat --language markdown
+```
+
 ## summary Output
 
 ```bash

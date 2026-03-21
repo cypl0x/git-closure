@@ -42,6 +42,22 @@ pub fn render_snapshot(snapshot: &Path, format: RenderFormat) -> Result<String> 
 fn render_markdown(header: &SnapshotHeader, files: &[SnapshotFile]) -> String {
     let mut out = String::new();
 
+    // YAML front matter — consumed by pandoc and other Markdown processors.
+    out.push_str("---\n");
+    out.push_str("title: \"Snapshot Audit Report\"\n");
+    out.push_str(&format!(
+        "snapshot-hash: {}\n",
+        yaml_quote(&header.snapshot_hash)
+    ));
+    out.push_str(&format!("file-count: {}\n", header.file_count));
+    if let Some(rev) = &header.git_rev {
+        out.push_str(&format!("git-rev: {}\n", yaml_quote(rev)));
+    }
+    if let Some(branch) = &header.git_branch {
+        out.push_str(&format!("git-branch: {}\n", yaml_quote(branch)));
+    }
+    out.push_str("---\n\n");
+
     out.push_str("# Snapshot Audit Report\n\n");
     out.push_str("## Metadata\n\n");
     out.push_str(&format!(
@@ -286,6 +302,12 @@ fn md_escape(s: &str) -> String {
     s.replace('|', "\\|").replace('`', "\\`")
 }
 
+/// Wraps a string in YAML double-quoted style, escaping `\` and `"`.
+fn yaml_quote(s: &str) -> String {
+    let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("\"{escaped}\"")
+}
+
 #[derive(Debug, Serialize)]
 struct RenderJson<'a> {
     snapshot_hash: &'a str,
@@ -401,6 +423,62 @@ mod tests {
             "markdown must include git revision"
         );
         assert!(output.contains("main"), "markdown must include branch name");
+    }
+
+    #[test]
+    fn render_markdown_has_yaml_front_matter() {
+        let dir = TempDir::new().unwrap();
+        let files = vec![text_file("a.txt", "hello")];
+        let snap = write_snap(&dir, &files, Some("cafebabe"), Some("main"));
+
+        let output = render_snapshot(&snap, RenderFormat::Markdown).unwrap();
+
+        assert!(
+            output.starts_with("---\n"),
+            "must open with YAML front matter"
+        );
+        assert!(
+            output.contains("title: \"Snapshot Audit Report\""),
+            "front matter must include title"
+        );
+        assert!(
+            output.contains("file-count: 1"),
+            "front matter must include file-count"
+        );
+        assert!(
+            output.contains("git-rev: \"cafebabe\""),
+            "front matter must include git-rev when present"
+        );
+        assert!(
+            output.contains("git-branch: \"main\""),
+            "front matter must include git-branch when present"
+        );
+        // Verify the closing delimiter and that the heading follows
+        let front_matter_end = output
+            .find("---\n\n")
+            .expect("front matter must close with ---");
+        let after = &output[front_matter_end + 5..];
+        assert!(
+            after.starts_with("# Snapshot Audit Report"),
+            "heading must follow front matter"
+        );
+    }
+
+    #[test]
+    fn render_markdown_yaml_front_matter_omits_git_fields_when_absent() {
+        let dir = TempDir::new().unwrap();
+        let files = vec![text_file("a.txt", "hello")];
+        let snap = write_snap(&dir, &files, None, None);
+
+        let output = render_snapshot(&snap, RenderFormat::Markdown).unwrap();
+        assert!(
+            !output.contains("git-rev:"),
+            "git-rev must be absent when not set"
+        );
+        assert!(
+            !output.contains("git-branch:"),
+            "git-branch must be absent when not set"
+        );
     }
 
     #[test]
