@@ -41,10 +41,16 @@
 //! | [`FmtOptions`] | Formatting behavior options |
 //! | [`ParseLimits`] | Resource limits applied during bounded snapshot parsing |
 //! | [`SnapshotSummary`] | Compact snapshot metadata summary |
+//! | [`ir::Closure`] | Semantic IR: the central content-addressed file-tree unit |
+//! | [`ir::ClosureNode`] | A node within a `Closure` (file or symlink) |
+//! | [`ir::FileNode`] | A regular file node in the IR |
+//! | [`ir::SymlinkNode`] | A symbolic link node in the IR |
+//! | [`ir::ClosureId`] | Content-addressed identity of a concrete `Closure` |
 
 // ── Module declarations ───────────────────────────────────────────────────────
 
 pub mod error;
+pub mod ir;
 pub mod nar;
 pub mod providers;
 
@@ -56,6 +62,7 @@ pub(crate) mod utils;
 // ── Public re-exports ─────────────────────────────────────────────────────────
 
 pub use error::GitClosureError;
+pub use ir::{Closure, ClosureId, ClosureNode, FileNode, SymlinkNode};
 pub use materialize::{
     materialize_snapshot, materialize_snapshot_with_options, verify_snapshot,
     verify_snapshot_parsed, verify_snapshot_with_root, MaterializeOptions, MaterializePolicy,
