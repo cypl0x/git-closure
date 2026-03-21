@@ -23,6 +23,7 @@
 //! | [`parse_snapshot`] | Parse in-memory snapshot text into header + entries |
 //! | [`parse_snapshot_with_limits`] | Parse snapshot text with resource limits for untrusted input |
 //! | [`summarize_snapshot`] | Compute aggregate snapshot metadata |
+//! | [`export_snapshot_as_nar`] | Export a snapshot as a binary NAR archive |
 //!
 //! | Type | Description |
 //! |---|---|
@@ -44,6 +45,7 @@
 // ── Module declarations ───────────────────────────────────────────────────────
 
 pub mod error;
+pub mod nar;
 pub mod providers;
 
 pub(crate) mod git;
@@ -63,6 +65,7 @@ pub use snapshot::build::{
     build_snapshot_with_options,
 };
 pub use snapshot::diff::{diff_snapshot_to_source, diff_snapshots, DiffEntry, DiffResult};
+pub use snapshot::export::export_snapshot_as_nar;
 pub use snapshot::render::{render_snapshot, RenderFormat};
 pub use snapshot::serial::{
     fmt_snapshot, fmt_snapshot_with_options, list_snapshot, list_snapshot_str, parse_snapshot,

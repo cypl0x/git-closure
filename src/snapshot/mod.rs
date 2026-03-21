@@ -3,6 +3,7 @@
 /// the dependency graph acyclic.
 pub mod build;
 pub mod diff;
+pub mod export;
 pub mod hash;
 pub mod render;
 pub mod serial;
