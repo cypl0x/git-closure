@@ -21,15 +21,20 @@
 //! This loss is by design: use the `.gcl` format for auditability and
 //! provenance tracking.
 
-use std::collections::BTreeMap;
 use std::fs;
-use std::io::{self, BufWriter, Write as _};
+use std::io;
 use std::path::Path;
 
+use crate::backends::ArtifactBackend;
 use crate::error::GitClosureError;
-use crate::nar::{write_nar, NarNode};
 use crate::snapshot::serial::parse_snapshot;
+
+#[cfg(test)]
+use crate::nar::{write_nar, NarNode};
+#[cfg(test)]
 use crate::snapshot::SnapshotFile;
+#[cfg(test)]
+use std::collections::BTreeMap;
 
 type Result<T> = std::result::Result<T, GitClosureError>;
 
@@ -55,35 +60,13 @@ pub fn export_snapshot_as_nar(snapshot_path: &Path, output_path: &Path) -> Resul
         ))
     })?;
 
-    let (_header, files) = parse_snapshot(&text)?;
-    let root = build_nar_tree(files)?;
-
-    let output_file = fs::File::create(output_path).map_err(|e| {
-        GitClosureError::Io(io::Error::new(
-            e.kind(),
-            format!("{}: {e}", output_path.display()),
-        ))
-    })?;
-    let mut writer = BufWriter::new(output_file);
-
-    write_nar(&mut writer, &root).map_err(|e| {
-        GitClosureError::Io(io::Error::new(
-            e.kind(),
-            format!("writing NAR to {}: {e}", output_path.display()),
-        ))
-    })?;
-
-    writer.flush().map_err(|e| {
-        GitClosureError::Io(io::Error::new(
-            e.kind(),
-            format!("flushing NAR output to {}: {e}", output_path.display()),
-        ))
-    })?;
-
-    Ok(())
+    let (header, files) = parse_snapshot(&text)?;
+    let closure = crate::ir::Closure::from((header, files));
+    crate::backends::nar::NarBackend.write(&closure, output_path)
 }
 
 /// Convert a flat list of [`SnapshotFile`] entries into a [`NarNode`] tree.
+#[cfg(test)]
 ///
 /// Each entry's slash-delimited `path` is split into components and inserted
 /// recursively into a [`BTreeMap`]-based tree.  [`BTreeMap`] guarantees
@@ -111,6 +94,7 @@ pub(crate) fn build_nar_tree(files: Vec<SnapshotFile>) -> Result<NarNode> {
 }
 
 /// Recursively insert a [`SnapshotFile`] into `tree` following `components`.
+#[cfg(test)]
 fn insert_into_tree(
     tree: &mut BTreeMap<String, NarNode>,
     components: &[&str],
