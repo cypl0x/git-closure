@@ -92,4 +92,5 @@ cargo build --release
 
 - Use conventional commits (`feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `chore:`).
 - Keep commits logically scoped.
+- Commits that close backlog tasks must include a body paragraph explaining what changed and why, even for docs-only tasks; the `Closes RS-NN` trailer is metadata, not a substitute for a body.
 - Keep quality gates green before committing.
