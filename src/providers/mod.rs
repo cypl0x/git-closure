@@ -804,6 +804,11 @@ mod tests {
         }
     }
 
+    /// Holds `TARBALL_LIMIT_ENV_LOCK` for its full lifetime while overriding
+    /// `GCL_GITHUB_TARBALL_MAX_BYTES`, then restores the previous value on drop.
+    ///
+    /// Use this guard when a test needs exclusive env-var access throughout its
+    /// body.
     struct TarballLimitEnvOverride {
         _lock: std::sync::MutexGuard<'static, ()>,
         previous: Option<String>,
@@ -821,6 +826,11 @@ mod tests {
         }
     }
 
+    /// Saves the current value of `GCL_GITHUB_TARBALL_MAX_BYTES` and restores
+    /// it on drop. Does NOT hold `TARBALL_LIMIT_ENV_LOCK` for its full lifetime
+    /// - it is only a cleanup fallback, not a full mutex guard. Use
+    /// `TarballLimitEnvOverride` if you need exclusive access for the duration
+    /// of a test body.
     struct TarballLimitEnvRestore {
         previous: Option<String>,
     }
@@ -874,6 +884,8 @@ mod tests {
 
     #[test]
     fn tarball_limit_env_override_restores_previous_value_on_drop() {
+        // Regression test: verifies TarballLimitEnvOverride cleanup semantics,
+        // even though production limit tests now pass explicit max_bytes values.
         let _restore = TarballLimitEnvRestore::capture();
         let _env_guard = lock_tarball_limit_env();
         std::env::remove_var(TARBALL_LIMIT_ENV);
@@ -893,6 +905,8 @@ mod tests {
 
     #[test]
     fn tarball_limit_env_override_restores_previous_value_after_panic() {
+        // Regression test: verifies TarballLimitEnvOverride cleanup semantics,
+        // even though production limit tests now pass explicit max_bytes values.
         let _restore = TarballLimitEnvRestore::capture();
         let _env_guard = lock_tarball_limit_env();
         std::env::remove_var(TARBALL_LIMIT_ENV);
