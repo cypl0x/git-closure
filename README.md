@@ -200,6 +200,16 @@ git-closure render repo.gcl --format json -o report.json
 - default output: stdout
 - optional file output: `-o/--output`
 
+Each rendered report includes:
+- document metadata (snapshot hash, file count, git revision/branch when present)
+- a file inventory table (path, type, mode, size, SHA-256 prefix)
+- full file contents for all regular files (binary files noted as `[binary content, N bytes]`)
+
+Symlink rendering policy:
+
+- Markdown/HTML: entry type shown as `symlink`, digest column shows `→ <target>`, no content block emitted
+- JSON: `type=symlink`, `mode="120000"`, `size=0`, `sha256=""`, `symlink_target` populated, `content=null`
+
 ### Pandoc integration
 
 The Markdown output includes a YAML front-matter block (title, snapshot-hash,
@@ -230,12 +240,6 @@ git-closure summary repo.gcl --json
 
 Summary includes snapshot hash, entry counts, total bytes, git metadata, and
 top-5 largest regular files.
-
-Symlink rendering policy:
-
-- Markdown/HTML: entry type shown as symlink, digest column shows `-> <target>`
-- JSON: `type=symlink`, `mode="120000"`, `size=0`, `sha256=""`, and
-  `symlink_target` populated
 
 ## Exit Codes
 
