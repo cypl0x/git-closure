@@ -9,9 +9,7 @@
 //! | Backend | Module | Format | Status |
 //! |---|---|---|---|
 //! | [`nar::NarBackend`] | `nar` | NAR binary archive | active |
-//!
-//! `GclBackend` (human-readable `.gcl` format) is a planned Phase 5+ backend,
-//! deferred until the `compile` subcommand provides a production callsite for it.
+//! | [`gcl::GclBackend`] | `gcl` | `.gcl` human-readable S-expression snapshot | active (Phase 5) |
 //!
 //! # Architecture note
 //!
@@ -24,6 +22,7 @@ use std::path::Path;
 use crate::error::GitClosureError;
 use crate::ir::Closure;
 
+pub mod gcl;
 pub mod nar;
 
 pub(crate) type Result<T> = std::result::Result<T, GitClosureError>;
