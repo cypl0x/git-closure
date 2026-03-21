@@ -4,7 +4,7 @@ use std::path::Path;
 
 use serde::Serialize;
 
-use crate::utils::io_error_with_path;
+use crate::utils::{io_error_with_path, sha256_prefix};
 
 use super::serial::parse_snapshot;
 use super::{ListEntry, Result, SnapshotHeader};
@@ -207,10 +207,6 @@ fn count_entry_types(entries: &[ListEntry]) -> (usize, usize) {
     (entries.len() - symlinks, symlinks)
 }
 
-fn sha256_prefix(sha256: &str) -> &str {
-    &sha256[..sha256.len().min(16)]
-}
-
 fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -401,15 +397,6 @@ mod tests {
         let json_a = render_snapshot(&snap, RenderFormat::Json).unwrap();
         let json_b = render_snapshot(&snap, RenderFormat::Json).unwrap();
         assert_eq!(json_a, json_b, "json output must be deterministic");
-    }
-
-    #[test]
-    fn sha256_prefix_handles_short_and_long_values() {
-        assert_eq!(super::sha256_prefix("abc"), "abc");
-        assert_eq!(
-            super::sha256_prefix("0123456789abcdefdeadbeef"),
-            "0123456789abcdef"
-        );
     }
 
     #[test]

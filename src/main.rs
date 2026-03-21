@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use git_closure::{
     build_snapshot_from_source, diff_snapshot_to_source, diff_snapshots, fmt_snapshot_with_options,
-    list_snapshot, materialize_snapshot, providers::ProviderKind, render_snapshot,
+    list_snapshot, materialize_snapshot, providers::ProviderKind, render_snapshot, sha256_prefix,
     summarize_snapshot, verify_snapshot, BuildOptions, DiffEntry, FmtOptions, GitClosureError,
     ListEntry, RenderFormat, SnapshotSummary,
 };
@@ -369,10 +369,6 @@ fn print_diff_stat(entries: &[DiffEntry]) {
     println!("symlink_changed: {symlink_changed}");
     println!("renamed:      {renamed}");
     println!("total:        {total}");
-}
-
-fn sha256_prefix(sha256: &str) -> &str {
-    &sha256[..sha256.len().min(16)]
 }
 
 fn print_list(entries: &[ListEntry], json: bool, long: bool) {
@@ -790,15 +786,6 @@ mod tests {
         assert_eq!(
             long_value[1]["symlink_target"],
             Value::String("a.txt".to_string())
-        );
-    }
-
-    #[test]
-    fn sha256_prefix_handles_short_and_long_values() {
-        assert_eq!(super::sha256_prefix("abc"), "abc");
-        assert_eq!(
-            super::sha256_prefix("0123456789abcdefdeadbeef"),
-            "0123456789abcdef"
         );
     }
 

@@ -26,6 +26,10 @@ pub(crate) fn truncate_stderr(bytes: &[u8]) -> String {
     format!("{}...", &trimmed[..end])
 }
 
+pub(crate) fn sha256_prefix(sha256: &str) -> &str {
+    &sha256[..sha256.len().min(16)]
+}
+
 /// Rejects any existing symlink along `target`'s ancestor chain under `root`.
 ///
 /// This is a best-effort metadata check. The filesystem may change between
@@ -123,6 +127,15 @@ mod tests {
     #[test]
     fn truncate_stderr_empty_input() {
         assert_eq!(truncate_stderr(b""), "");
+    }
+
+    #[test]
+    fn sha256_prefix_handles_short_and_long_values() {
+        assert_eq!(sha256_prefix("abc"), "abc");
+        assert_eq!(
+            sha256_prefix("0123456789abcdefdeadbeef"),
+            "0123456789abcdef"
+        );
     }
 
     #[test]

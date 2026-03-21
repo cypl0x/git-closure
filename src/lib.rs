@@ -74,6 +74,11 @@ pub use snapshot::{
 };
 
 #[doc(hidden)]
+pub fn sha256_prefix(sha256: &str) -> &str {
+    utils::sha256_prefix(sha256)
+}
+
+#[doc(hidden)]
 pub fn fuzz_parse_snapshot(input: &str) {
     let _ = snapshot::serial::parse_snapshot(input);
 }
