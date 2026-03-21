@@ -838,9 +838,12 @@ mod tests {
     }
 
     /// Saves the current value of `GCL_GITHUB_TARBALL_MAX_BYTES` and restores
-    /// it on drop. Does NOT hold `TARBALL_LIMIT_ENV_LOCK` for its full lifetime
-    /// - it is only a cleanup fallback, not a full mutex guard. Use
-    /// `TarballLimitEnvOverride` if you need exclusive access for the duration
+    /// it on drop.
+    ///
+    /// Does NOT hold `TARBALL_LIMIT_ENV_LOCK` for its full lifetime.
+    /// It is only a cleanup fallback, not a full mutex guard.
+    ///
+    /// Use `TarballLimitEnvOverride` if you need exclusive access for the duration
     /// of a test body.
     struct TarballLimitEnvRestore {
         previous: Option<String>,
