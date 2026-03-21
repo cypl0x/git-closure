@@ -17,7 +17,8 @@ use crate::git::{
     ensure_git_source_is_clean, is_within_prefix, tracked_paths_from_index,
     untracked_paths_from_status, GitRepoContext,
 };
-use crate::providers::{choose_provider, fetch_source, Provider, ProviderKind, SourceSpec};
+use crate::providers::{choose_provider, fetch_source, Provider, ProviderKind};
+use crate::source::SourceSpec;
 use crate::utils::{io_error_with_path, truncate_stderr};
 
 use crate::providers::run_command_output;

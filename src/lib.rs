@@ -53,6 +53,7 @@ pub mod error;
 pub mod ir;
 pub mod nar;
 pub mod providers;
+pub mod source;
 
 pub(crate) mod backends;
 pub(crate) mod gcl;
