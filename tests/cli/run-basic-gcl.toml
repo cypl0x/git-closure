@@ -1,0 +1,6 @@
+bin.name = "git-closure"
+args = ["run", "recipe.toml"]
+status = "success"
+stdout = ""
+stderr = ""
+fs.sandbox = true

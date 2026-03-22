@@ -1,0 +1,16 @@
+bin.name = "git-closure"
+args = ["run", "--help"]
+status = "success"
+stdout = """
+Execute a recipe file (routes through the provenance-light compile path)
+
+Usage: git-closure run <RECIPE>
+
+Arguments:
+  <RECIPE>  Recipe file (.toml)
+
+Options:
+  -h, --help  Print help
+
+PROVENANCE: run uses the compile path — no git metadata is injected. See `build` for git-aware snapshots with git-rev/git-branch.
+"""

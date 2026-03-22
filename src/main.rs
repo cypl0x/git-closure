@@ -8,8 +8,8 @@ use serde::Serialize;
 use git_closure::{
     build_snapshot_from_source, compile_source, diff_snapshot_to_source, diff_snapshots,
     export_snapshot_as_nar, fmt_snapshot_with_options, list_snapshot, materialize_snapshot,
-    providers::ProviderKind, render_snapshot, summarize_snapshot, verify_snapshot, BuildOptions,
-    CompileFormat, DiffEntry, FmtOptions, GitClosureError, ListEntry, RenderFormat,
+    providers::ProviderKind, recipe, render_snapshot, summarize_snapshot, verify_snapshot,
+    BuildOptions, CompileFormat, DiffEntry, FmtOptions, GitClosureError, ListEntry, RenderFormat,
     SnapshotSummary,
 };
 
@@ -140,6 +140,16 @@ enum Commands {
         format: CompileOutputFormat,
         #[arg(long, value_enum, default_value_t = BuildProvider::Auto)]
         provider: BuildProvider,
+    },
+    #[command(
+        about = "Execute a recipe file (routes through the provenance-light compile path)",
+        visible_alias = "R",
+        after_help = "PROVENANCE: run uses the compile path — no git metadata is injected. \
+                      See `build` for git-aware snapshots with git-rev/git-branch."
+    )]
+    Run {
+        #[arg(help = "Recipe file (.toml)")]
+        recipe: PathBuf,
     },
     #[command(
         about = "Export a snapshot to another archive format (currently: NAR)",
@@ -370,6 +380,12 @@ fn run() -> Result<(), GitClosureError> {
             provider,
         } => {
             compile_source(&source, &output, format.into(), provider.into())?;
+        }
+        Commands::Run {
+            recipe: recipe_path,
+        } => {
+            let r = recipe::from_file(&recipe_path)?;
+            recipe::execute(&r)?;
         }
         Commands::Export {
             snapshot,
