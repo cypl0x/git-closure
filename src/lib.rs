@@ -25,6 +25,7 @@
 //! | [`summarize_snapshot`] | Compute aggregate snapshot metadata |
 //! | [`export_snapshot_as_nar`] | Export a snapshot as a binary NAR archive |
 //! | [`compile_source`] | Compile a source into a `.gcl` or NAR artifact via the IR pipeline |
+//! | [`recipe::execute`] | Execute a declarative recipe file via the compile path |
 //!
 //! | Type | Description |
 //! |---|---|
@@ -49,6 +50,7 @@
 //! | [`ir::ClosureId`] | Content-addressed identity of a concrete `Closure` |
 //! | [`CompileFormat`] | Output format selector for [`compile_source`] |
 //! | [`GclBackend`] | Artifact backend that writes a `Closure` as a `.gcl` snapshot |
+//! | [`Recipe`] | Declarative compile target loaded from a TOML recipe file |
 
 // ── Module declarations ───────────────────────────────────────────────────────
 
@@ -57,6 +59,8 @@ pub mod ir;
 pub mod nar;
 pub mod providers;
 pub mod source;
+
+pub mod recipe;
 
 pub(crate) mod backends;
 pub(crate) mod compile;
@@ -69,6 +73,7 @@ pub(crate) mod utils;
 
 pub use backends::gcl::GclBackend;
 pub use compile::{compile_source, CompileFormat};
+pub use recipe::Recipe;
 pub use error::GitClosureError;
 pub use gcl::build::{
     build_snapshot, build_snapshot_from_provider, build_snapshot_from_source,

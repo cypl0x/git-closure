@@ -30,6 +30,7 @@ ignore = "0.4"
 lexpr = "0.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+toml = "0.8"
 sha2 = "0.10"
 tar = "0.4"
 tempfile = "3.13"
