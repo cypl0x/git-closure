@@ -142,7 +142,7 @@ enum Commands {
         provider: BuildProvider,
     },
     #[command(
-        about = "Execute a recipe file (routes through the provenance-light compile path)",
+        about = "Execute a recipe file",
         visible_alias = "R",
         after_help = "PROVENANCE: behavior depends on recipe mode. \
                       mode = \"compile\" (default) uses the provenance-light compile path — \

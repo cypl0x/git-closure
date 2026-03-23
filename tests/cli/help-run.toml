@@ -2,7 +2,7 @@ bin.name = "git-closure"
 args = ["run", "--help"]
 status = "success"
 stdout = """
-Execute a recipe file (routes through the provenance-light compile path)
+Execute a recipe file
 
 Usage: git-closure run <RECIPE>
 
