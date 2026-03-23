@@ -26,8 +26,16 @@ fn recipe_parses_minimal_toml_and_asserts_defaults() {
     let r = recipe::from_str(text).expect("minimal recipe must parse");
     assert_eq!(r.source, "gh:owner/repo");
     assert_eq!(r.output, "snapshot.gcl");
-    assert_eq!(r.format, RecipeFormat::Gcl, "omitted format must default to gcl");
-    assert_eq!(r.provider, RecipeProvider::Auto, "omitted provider must default to auto");
+    assert_eq!(
+        r.format,
+        RecipeFormat::Gcl,
+        "omitted format must default to gcl"
+    );
+    assert_eq!(
+        r.provider,
+        RecipeProvider::Auto,
+        "omitted provider must default to auto"
+    );
 }
 
 // Unknown fields must be rejected, not silently ignored.
@@ -100,11 +108,20 @@ fn recipe_from_file_preserves_remote_source_unchanged() {
 
     let r = recipe::from_file(&recipe_path).unwrap();
 
-    assert_eq!(r.source, "gh:owner/repo", "from_file must not rewrite gh: sources");
+    assert_eq!(
+        r.source, "gh:owner/repo",
+        "from_file must not rewrite gh: sources"
+    );
 
     let output_path = std::path::Path::new(&r.output);
-    assert!(output_path.is_absolute(), "output must be an absolute path after from_file()");
-    assert!(r.output.ends_with("out.gcl"), "output filename must be preserved");
+    assert!(
+        output_path.is_absolute(),
+        "output must be an absolute path after from_file()"
+    );
+    assert!(
+        r.output.ends_with("out.gcl"),
+        "output filename must be preserved"
+    );
     assert_eq!(
         output_path.parent().unwrap(),
         dir.path(),
@@ -128,7 +145,10 @@ fn recipe_from_file_resolves_path_prefix_source() {
     let r = recipe::from_file(&recipe_path).unwrap();
 
     let expected = format!("path:{}", dir.path().join("flake").display());
-    assert_eq!(r.source, expected, "path: source must be resolved recipe-file-relative");
+    assert_eq!(
+        r.source, expected,
+        "path: source must be resolved recipe-file-relative"
+    );
 
     assert!(
         std::path::Path::new(&r.output).is_absolute(),
@@ -157,7 +177,10 @@ fn recipe_from_file_resolves_nix_path_source() {
     let r = recipe::from_file(&recipe_path).unwrap();
 
     let expected = format!("nix:path:{}", dir.path().join("flake").display());
-    assert_eq!(r.source, expected, "nix:path: source must be resolved recipe-file-relative");
+    assert_eq!(
+        r.source, expected,
+        "nix:path: source must be resolved recipe-file-relative"
+    );
 
     assert!(
         std::path::Path::new(&r.output).is_absolute(),
@@ -182,7 +205,10 @@ fn recipe_from_file_resolves_local_git_suffix_source() {
     let r = recipe::from_file(&recipe_path).unwrap();
 
     let expected = dir.path().join("repo.git").to_string_lossy().into_owned();
-    assert_eq!(r.source, expected, "./repo.git must be resolved recipe-file-relative");
+    assert_eq!(
+        r.source, expected,
+        "./repo.git must be resolved recipe-file-relative"
+    );
     assert!(
         std::path::Path::new(&r.source).is_absolute(),
         "resolved source must be an absolute path"
@@ -202,13 +228,142 @@ fn recipe_from_file_rejects_file_plus_source() {
     )
     .unwrap();
 
-    let err = recipe::from_file(&recipe_path)
-        .expect_err("file+ local-path source must be rejected");
+    let err =
+        recipe::from_file(&recipe_path).expect_err("file+ local-path source must be rejected");
     let msg = err.to_string();
-    assert!(msg.contains("file+"), "error must mention file+ syntax: {msg}");
+    assert!(
+        msg.contains("file+"),
+        "error must mention file+ syntax: {msg}"
+    );
     assert!(
         msg.contains("Phase 6") || msg.contains("not supported"),
         "error must indicate unsupported status: {msg}"
+    );
+}
+
+// ── Phase 7: mode field ───────────────────────────────────────────────────────
+
+// Fails until RecipeMode is pub in git_closure::recipe and Recipe has a `mode` field.
+#[test]
+fn recipe_mode_defaults_to_compile() {
+    use git_closure::recipe::{self, RecipeMode};
+
+    let text = r#"
+        source = "gh:owner/repo"
+        output = "snapshot.gcl"
+    "#;
+    let r = recipe::from_str(text).expect("minimal recipe must parse");
+    assert_eq!(
+        r.mode,
+        RecipeMode::Compile,
+        "omitted mode must default to compile"
+    );
+}
+
+// Fails until RecipeMode::Build is a recognised serde variant.
+#[test]
+fn recipe_mode_parses_build_variant() {
+    use git_closure::recipe::{self, RecipeMode};
+
+    let text = r#"
+        source = "gh:owner/repo"
+        output = "snapshot.gcl"
+        mode   = "build"
+    "#;
+    let r = recipe::from_str(text).expect("mode=build must parse");
+    assert_eq!(r.mode, RecipeMode::Build);
+}
+
+// Fails until the serde layer rejects unknown enum variants.
+#[test]
+fn recipe_rejects_unknown_mode_value() {
+    use git_closure::recipe;
+
+    let text = r#"
+        source = "."
+        output = "out.gcl"
+        mode   = "fast"
+    "#;
+    assert!(
+        recipe::from_str(text).is_err(),
+        "unknown mode variant must be rejected"
+    );
+}
+
+// Fails until execute() validates the build+nar combination.
+// The error must fire before any I/O (source="/tmp" is never accessed).
+#[test]
+fn recipe_build_mode_with_nar_format_is_validation_error() {
+    use git_closure::recipe;
+
+    let text = r#"
+        source = "/tmp"
+        output = "/tmp/out.nar"
+        mode   = "build"
+        format = "nar"
+    "#;
+    let r = recipe::from_str(text).expect("recipe must parse");
+    let err = recipe::execute(&r).expect_err("build+nar must be a validation error");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("build mode") || msg.contains("nar"),
+        "error message must mention the constraint: {msg}"
+    );
+}
+
+// Integration: build mode routes to the git-aware build path.
+// For a real git repo, git_rev must be present in the output header.
+#[test]
+fn recipe_build_mode_routes_to_build_path_and_records_git_rev() {
+    use git_closure::{parse_snapshot, recipe};
+    use std::process::Command;
+
+    let root = tempfile::TempDir::new().unwrap();
+    let src = root.path();
+
+    Command::new("git")
+        .args(["init", "-b", "main"])
+        .current_dir(src)
+        .output()
+        .expect("git init");
+    Command::new("git")
+        .args(["config", "user.email", "test@test.com"])
+        .current_dir(src)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(src)
+        .output()
+        .unwrap();
+    std::fs::write(src.join("hello.txt"), b"hello\n").unwrap();
+    Command::new("git")
+        .args(["add", "."])
+        .current_dir(src)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["commit", "-m", "init"])
+        .current_dir(src)
+        .output()
+        .expect("git commit");
+
+    let out_dir = tempfile::TempDir::new().unwrap();
+    let output = out_dir.path().join("out.gcl");
+    let text = format!(
+        "source = {:?}\noutput = {:?}\nmode = \"build\"\n",
+        src.to_str().unwrap(),
+        output.to_str().unwrap(),
+    );
+    let r = recipe::from_str(&text).unwrap();
+    recipe::execute(&r).unwrap();
+
+    assert!(output.exists(), "output .gcl must be created");
+    let gcl = std::fs::read_to_string(&output).unwrap();
+    let (header, _files) = parse_snapshot(&gcl).expect("build-mode output must be valid .gcl");
+    assert!(
+        header.git_rev.is_some(),
+        "build mode must record git-rev in the snapshot header for a real git repo"
     );
 }
 
