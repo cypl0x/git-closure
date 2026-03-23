@@ -12,5 +12,5 @@ Arguments:
 Options:
   -h, --help  Print help
 
-PROVENANCE: run uses the compile path — no git metadata is injected. See `build` for git-aware snapshots with git-rev/git-branch.
+PROVENANCE: behavior depends on recipe mode. mode = "compile" (default) uses the provenance-light compile path — no git metadata is injected. mode = "build" uses the git-aware build path and records git metadata where available (gcl only). See `build` for the direct build command.
 """

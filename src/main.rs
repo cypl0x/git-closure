@@ -144,8 +144,11 @@ enum Commands {
     #[command(
         about = "Execute a recipe file (routes through the provenance-light compile path)",
         visible_alias = "R",
-        after_help = "PROVENANCE: run uses the compile path — no git metadata is injected. \
-                      See `build` for git-aware snapshots with git-rev/git-branch."
+        after_help = "PROVENANCE: behavior depends on recipe mode. \
+                      mode = \"compile\" (default) uses the provenance-light compile path — \
+                      no git metadata is injected. \
+                      mode = \"build\" uses the git-aware build path and records git metadata where available (gcl only). \
+                      See `build` for the direct build command."
     )]
     Run {
         #[arg(help = "Recipe file (.toml)")]
