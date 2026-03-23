@@ -73,7 +73,6 @@ pub(crate) mod utils;
 
 pub use backends::gcl::GclBackend;
 pub use compile::{compile_source, CompileFormat};
-pub use recipe::Recipe;
 pub use error::GitClosureError;
 pub use gcl::build::{
     build_snapshot, build_snapshot_from_provider, build_snapshot_from_source,
@@ -95,6 +94,7 @@ pub use materialize::{
     materialize_snapshot, materialize_snapshot_with_options, verify_snapshot,
     verify_snapshot_parsed, verify_snapshot_with_root, MaterializeOptions, MaterializePolicy,
 };
+pub use recipe::Recipe;
 
 #[doc(hidden)]
 pub fn fuzz_parse_snapshot(input: &str) {

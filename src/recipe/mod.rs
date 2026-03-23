@@ -1,8 +1,14 @@
-//! Declarative recipe frontend for the compile path.
+//! Declarative recipe frontend for the compile and build paths.
 //!
-//! A [`Recipe`] is a persistent description of a single compile target:
-//! what source to snapshot, what output file to produce, and which backend
-//! to use. It routes through [`crate::compile::compile_source`] (provenance-light).
+//! A [`Recipe`] is a persistent description of a single snapshot target:
+//! what source to snapshot, what output file to produce, which backend to
+//! use, and which execution mode to apply.
+//!
+//! - `mode = "compile"` (default): routes through [`crate::compile::compile_source`]
+//!   (provenance-light, supports `gcl` and `nar` output).
+//! - `mode = "build"`: routes through [`crate::gcl::build::build_snapshot_from_source`],
+//!   using the git-aware build path and recording git metadata where available
+//!   (`gcl` output only in Phase 7).
 //!
 //! # Path semantics
 //!
@@ -38,9 +44,11 @@ use serde::Deserialize;
 
 use crate::compile::{compile_source, CompileFormat};
 use crate::error::GitClosureError;
+use crate::gcl::build::build_snapshot_from_source;
+use crate::gcl::BuildOptions;
 use crate::providers::ProviderKind;
 
-/// A declarative compile target.
+/// A declarative snapshot target.
 ///
 /// Unknown fields are rejected at parse time (`deny_unknown_fields`) so that
 /// typos like `provdier`, `formta`, or `outputs` produce a clear error instead
@@ -54,6 +62,8 @@ pub struct Recipe {
     pub format: RecipeFormat,
     #[serde(default)]
     pub provider: RecipeProvider,
+    #[serde(default)]
+    pub mode: RecipeMode,
 }
 
 /// Output format for a recipe.
@@ -75,6 +85,21 @@ pub enum RecipeProvider {
     GitClone,
     Nix,
     GithubApi,
+}
+
+/// Execution mode for a recipe.
+///
+/// - `Compile` (default): routes through [`crate::compile::compile_source`]
+///   (provenance-light, supports `gcl` and `nar` output).
+/// - `Build`: routes through [`crate::gcl::build::build_snapshot_from_source`],
+///   using the git-aware build path and recording git metadata where available.
+///   Only `gcl` output is supported in Phase 7.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum RecipeMode {
+    #[default]
+    Compile,
+    Build,
 }
 
 impl From<RecipeFormat> for CompileFormat {
@@ -123,7 +148,9 @@ pub fn from_file(path: &Path) -> Result<Recipe, GitClosureError> {
 
     // Always resolve output recipe-file-relative (output may not exist yet).
     if !Path::new(&recipe.output).is_absolute() {
-        recipe.output = normalize_path(&base.join(&recipe.output)).to_string_lossy().into_owned();
+        recipe.output = normalize_path(&base.join(&recipe.output))
+            .to_string_lossy()
+            .into_owned();
     }
 
     // Resolve source — remote/hosted refs preserved, local paths resolved recipe-relative.
@@ -193,7 +220,9 @@ fn resolve_source(source: &str, base: &Path) -> Result<String, GitClosureError> 
     if p.is_absolute() {
         return Ok(source.to_owned());
     }
-    Ok(normalize_path(&base.join(source)).to_string_lossy().into_owned())
+    Ok(normalize_path(&base.join(source))
+        .to_string_lossy()
+        .into_owned())
 }
 
 /// Normalize a path by resolving `.` and `..` components without hitting the
@@ -244,12 +273,36 @@ fn is_remote_source(source: &str) -> bool {
 ///
 /// Paths in `recipe` are used as-is. If loaded via [`from_file`], they
 /// are already recipe-file-relative absolute paths.
-/// Routes through [`compile_source`] (provenance-light).
+///
+/// Routing:
+/// - [`RecipeMode::Compile`]: routes through [`compile_source`] (provenance-light,
+///   supports `gcl` and `nar` output).
+/// - [`RecipeMode::Build`]: routes through [`build_snapshot_from_source`], using
+///   the git-aware build path and recording git metadata where available.
+///   Only `gcl` output is supported in Phase 7; `nar` is rejected with a
+///   clear validation error.
 pub fn execute(recipe: &Recipe) -> Result<(), GitClosureError> {
-    compile_source(
-        &recipe.source,
-        Path::new(&recipe.output),
-        recipe.format.clone().into(),
-        recipe.provider.clone().into(),
-    )
+    match recipe.mode {
+        RecipeMode::Build => {
+            if recipe.format == RecipeFormat::Nar {
+                return Err(GitClosureError::Parse(
+                    "build mode only supports gcl output; \
+                     nar format is not available with mode = \"build\" in Phase 7"
+                        .to_string(),
+                ));
+            }
+            build_snapshot_from_source(
+                &recipe.source,
+                Path::new(&recipe.output),
+                &BuildOptions::default(),
+                recipe.provider.clone().into(),
+            )
+        }
+        RecipeMode::Compile => compile_source(
+            &recipe.source,
+            Path::new(&recipe.output),
+            recipe.format.clone().into(),
+            recipe.provider.clone().into(),
+        ),
+    }
 }
