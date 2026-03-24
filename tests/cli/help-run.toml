@@ -4,13 +4,14 @@ status = "success"
 stdout = """
 Execute a recipe file
 
-Usage: git-closure run <RECIPE>
+Usage: git-closure run [OPTIONS] <RECIPE>
 
 Arguments:
-  <RECIPE>  Recipe file (.toml)
+  <RECIPE>  Recipe or manifest file (.toml)
 
 Options:
-  -h, --help  Print help
+      --target <TARGET>  Target to execute (required when manifest has multiple targets with no default_target)
+  -h, --help             Print help
 
-PROVENANCE: behavior depends on recipe mode. mode = "compile" (default) uses the provenance-light compile path — no git metadata is injected. mode = "build" uses the git-aware build path and records git metadata where available (gcl only). See `build` for the direct build command.
+PROVENANCE: behavior depends on recipe mode. mode = "compile" (default) uses the provenance-light compile path — no git metadata is injected. mode = "build" uses the git-aware build path and records git metadata where available (gcl only). Manifests with multiple targets require --target <name> unless default_target is set. See `build` for the direct build command.
 """

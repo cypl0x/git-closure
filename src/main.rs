@@ -148,11 +148,18 @@ enum Commands {
                       mode = \"compile\" (default) uses the provenance-light compile path — \
                       no git metadata is injected. \
                       mode = \"build\" uses the git-aware build path and records git metadata where available (gcl only). \
+                      Manifests with multiple targets require --target <name> unless default_target is set. \
                       See `build` for the direct build command."
     )]
     Run {
-        #[arg(help = "Recipe file (.toml)")]
+        #[arg(help = "Recipe or manifest file (.toml)")]
         recipe: PathBuf,
+        #[arg(
+            long,
+            value_name = "TARGET",
+            help = "Target to execute (required when manifest has multiple targets with no default_target)"
+        )]
+        target: Option<String>,
     },
     #[command(
         about = "Export a snapshot to another archive format (currently: NAR)",
@@ -386,9 +393,11 @@ fn run() -> Result<(), GitClosureError> {
         }
         Commands::Run {
             recipe: recipe_path,
+            target,
         } => {
-            let r = recipe::from_file(&recipe_path)?;
-            recipe::execute(&r)?;
+            let manifest = recipe::manifest_from_file(&recipe_path)?;
+            let r = manifest.select(target.as_deref())?;
+            recipe::execute(r)?;
         }
         Commands::Export {
             snapshot,

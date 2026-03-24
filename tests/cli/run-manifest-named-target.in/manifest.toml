@@ -1,0 +1,3 @@
+[targets.dev]
+source = "src"
+output = "out.gcl"

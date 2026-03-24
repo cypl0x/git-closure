@@ -1,0 +1,6 @@
+bin.name = "git-closure"
+args = ["run", "manifest.toml", "--target", "dev"]
+status = "success"
+stdout = ""
+stderr = ""
+fs.sandbox = true
