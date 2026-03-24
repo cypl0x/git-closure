@@ -38,6 +38,7 @@
 //! Use [`from_file`] to get correctly resolved paths.
 //! Use [`from_str`] for testing or for recipes where all paths are absolute.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::Deserialize;
@@ -100,6 +101,150 @@ pub enum RecipeMode {
     #[default]
     Compile,
     Build,
+}
+
+/// A manifest of named snapshot targets, loaded from a TOML file.
+///
+/// Supports two TOML formats:
+/// - **Legacy flat** (Phase 6/7): top-level `source`/`output` fields — parsed as a
+///   single target named `"default"` for backward compatibility.
+/// - **Named targets**: `[targets.<name>]` sections — each section is a full [`Recipe`].
+///
+/// `targets` is a [`BTreeMap`] so iteration order is deterministic; this is important
+/// for a durable public API type and ensures error messages (listing available target
+/// names) are stable and sorted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Manifest {
+    pub targets: BTreeMap<String, Recipe>,
+    pub default_target: Option<String>,
+}
+
+impl Manifest {
+    /// Select a target by name, applying default / single-target ergonomics when
+    /// `name` is `None`.
+    ///
+    /// Rules:
+    /// - `Some(n)` → look up by name; error (listing available names in sorted order)
+    ///   if not found.
+    /// - `None` + `default_target` set → use it; error if it names a nonexistent target.
+    /// - `None` + exactly 1 target + no `default_target` → auto-select (covers both
+    ///   legacy flat files and new single-target manifests without requiring `--target`).
+    /// - `None` + 0 targets → error.
+    /// - `None` + >1 targets + no `default_target` → error listing targets and
+    ///   instructing the user to use `--target`.
+    pub fn select(&self, name: Option<&str>) -> Result<&Recipe, GitClosureError> {
+        match name {
+            Some(n) => self.targets.get(n).ok_or_else(|| {
+                let avail: Vec<&str> = self.targets.keys().map(|s| s.as_str()).collect();
+                GitClosureError::Parse(format!(
+                    "target {n:?} not found; available: {}",
+                    avail.join(", ")
+                ))
+            }),
+            None => {
+                if let Some(d) = &self.default_target {
+                    self.targets.get(d.as_str()).ok_or_else(|| {
+                        GitClosureError::Parse(format!(
+                            "default_target {d:?} is not defined in [targets.*]"
+                        ))
+                    })
+                } else if self.targets.len() == 1 {
+                    Ok(self.targets.values().next().unwrap())
+                } else if self.targets.is_empty() {
+                    Err(GitClosureError::Parse(
+                        "manifest has no targets".to_string(),
+                    ))
+                } else {
+                    let avail: Vec<&str> = self.targets.keys().map(|s| s.as_str()).collect();
+                    Err(GitClosureError::Parse(format!(
+                        "manifest has multiple targets but no default_target; \
+                         use --target to select one. Available: {}",
+                        avail.join(", ")
+                    )))
+                }
+            }
+        }
+    }
+}
+
+// Private deserialization helper for the [targets.<name>] format.
+// deny_unknown_fields catches top-level typos like `default_targte`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManifestToml {
+    default_target: Option<String>,
+    targets: BTreeMap<String, Recipe>,
+}
+
+/// Parse a [`Manifest`] from a TOML string.
+///
+/// Auto-detects format:
+/// - If the top-level table contains `source`, treats it as a legacy single-target
+///   flat recipe (backward compatible with Phase 6/7 files).
+/// - If the top-level table contains `targets`, treats it as a named-target manifest.
+/// - Both present → error.
+/// - Neither present → error.
+///
+/// Paths are returned as-is. Use [`manifest_from_file`] for recipe-file-relative
+/// path resolution.
+pub fn manifest_from_str(text: &str) -> Result<Manifest, GitClosureError> {
+    let value: toml::Value =
+        toml::from_str(text).map_err(|e| GitClosureError::Parse(e.to_string()))?;
+    let table = value
+        .as_table()
+        .ok_or_else(|| GitClosureError::Parse("manifest must be a TOML table".to_string()))?;
+
+    match (table.contains_key("source"), table.contains_key("targets")) {
+        (true, true) => Err(GitClosureError::Parse(
+            "cannot mix top-level source/output fields with [targets.*] sections; \
+             use one format or the other"
+                .to_string(),
+        )),
+        (true, false) => {
+            // Legacy single-target flat format.
+            let recipe: Recipe =
+                toml::from_str(text).map_err(|e| GitClosureError::Parse(e.to_string()))?;
+            let mut targets = BTreeMap::new();
+            targets.insert("default".to_string(), recipe);
+            Ok(Manifest {
+                targets,
+                default_target: Some("default".to_string()),
+            })
+        }
+        (false, true) => {
+            let raw: ManifestToml =
+                toml::from_str(text).map_err(|e| GitClosureError::Parse(e.to_string()))?;
+            Ok(Manifest {
+                targets: raw.targets,
+                default_target: raw.default_target,
+            })
+        }
+        (false, false) => Err(GitClosureError::Parse(
+            "manifest must contain either top-level source/output fields \
+             or [targets.*] sections"
+                .to_string(),
+        )),
+    }
+}
+
+/// Parse a [`Manifest`] from a TOML file on disk, resolving relative paths per-target.
+///
+/// Path resolution is applied to each target independently, using the manifest file's
+/// parent directory as the base — identical semantics to [`from_file`] for a single recipe.
+pub fn manifest_from_file(path: &Path) -> Result<Manifest, GitClosureError> {
+    let canon = std::fs::canonicalize(path)?;
+    let base = canon.parent().unwrap_or(Path::new("/"));
+    let text = std::fs::read_to_string(&canon)?;
+    let mut manifest = manifest_from_str(&text)?;
+    for recipe in manifest.targets.values_mut() {
+        if !Path::new(&recipe.output).is_absolute() {
+            recipe.output = normalize_path(&base.join(&recipe.output))
+                .to_string_lossy()
+                .into_owned();
+        }
+        recipe.source = resolve_source(&recipe.source, base)?;
+    }
+    Ok(manifest)
 }
 
 impl From<RecipeFormat> for CompileFormat {

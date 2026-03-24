@@ -94,6 +94,7 @@ pub use materialize::{
     materialize_snapshot, materialize_snapshot_with_options, verify_snapshot,
     verify_snapshot_parsed, verify_snapshot_with_root, MaterializeOptions, MaterializePolicy,
 };
+pub use recipe::Manifest;
 pub use recipe::Recipe;
 
 #[doc(hidden)]
