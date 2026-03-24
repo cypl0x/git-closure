@@ -367,6 +367,307 @@ fn recipe_build_mode_routes_to_build_path_and_records_git_rev() {
     );
 }
 
+// ── Phase 8: Manifest accessibility guards ────────────────────────────────────
+
+// Fails until Manifest is re-exported at crate root
+#[test]
+fn manifest_accessible_via_crate_root() {
+    let _ = std::mem::size_of::<git_closure::Manifest>();
+}
+
+// Fails until manifest_from_str is pub in git_closure::recipe
+#[test]
+fn manifest_from_str_accessible_via_recipe_module() {
+    use git_closure::recipe;
+    // empty string is an invalid manifest — what matters is the function is reachable
+    let _ = recipe::manifest_from_str("");
+}
+
+// Fails until manifest_from_file is pub in git_closure::recipe
+#[test]
+fn manifest_from_file_accessible_via_recipe_module() {
+    use git_closure::recipe;
+    use std::path::Path;
+    // nonexistent path → Err; what matters is the function is reachable
+    let _ = recipe::manifest_from_file(Path::new("/nonexistent/path/manifest.toml"));
+}
+
+// ── Phase 8: Manifest type and named targets ──────────────────────────────────
+
+#[test]
+fn manifest_parses_multi_target_toml() {
+    use git_closure::recipe;
+    let text = r#"
+        [targets.dev]
+        source = "."
+        output = "dev.gcl"
+
+        [targets.release]
+        source = "gh:owner/repo"
+        output = "release.gcl"
+    "#;
+    let m = recipe::manifest_from_str(text).expect("multi-target manifest must parse");
+    assert!(m.targets.contains_key("dev"), "dev target must be present");
+    assert!(
+        m.targets.contains_key("release"),
+        "release target must be present"
+    );
+    assert_eq!(m.targets.len(), 2);
+    assert_eq!(m.targets["dev"].output, "dev.gcl");
+    assert_eq!(m.targets["release"].source, "gh:owner/repo");
+}
+
+#[test]
+fn manifest_selects_default_target_when_none_specified() {
+    use git_closure::recipe;
+    let text = r#"
+        default_target = "dev"
+
+        [targets.dev]
+        source = "."
+        output = "dev.gcl"
+
+        [targets.release]
+        source = "gh:owner/repo"
+        output = "release.gcl"
+    "#;
+    let m = recipe::manifest_from_str(text).expect("manifest must parse");
+    let r = m
+        .select(None)
+        .expect("select(None) must pick default target");
+    assert_eq!(r.output, "dev.gcl");
+}
+
+#[test]
+fn manifest_selects_named_target() {
+    use git_closure::recipe;
+    let text = r#"
+        [targets.dev]
+        source = "."
+        output = "dev.gcl"
+
+        [targets.release]
+        source = "gh:owner/repo"
+        output = "release.gcl"
+    "#;
+    let m = recipe::manifest_from_str(text).expect("manifest must parse");
+    let r = m
+        .select(Some("release"))
+        .expect("select(Some(\"release\")) must succeed");
+    assert_eq!(r.source, "gh:owner/repo");
+}
+
+#[test]
+fn manifest_error_multiple_targets_no_default_requires_flag() {
+    use git_closure::recipe;
+    let text = r#"
+        [targets.dev]
+        source = "."
+        output = "dev.gcl"
+
+        [targets.release]
+        source = "gh:owner/repo"
+        output = "release.gcl"
+    "#;
+    let m = recipe::manifest_from_str(text).expect("manifest must parse");
+    let err = m
+        .select(None)
+        .expect_err("select(None) must fail when no default and multiple targets");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("--target"),
+        "error must mention --target: {msg}"
+    );
+}
+
+#[test]
+fn manifest_error_unknown_target_name_lists_available_in_sorted_order() {
+    use git_closure::recipe;
+    let text = r#"
+        [targets.release]
+        source = "gh:owner/repo"
+        output = "release.gcl"
+
+        [targets.dev]
+        source = "."
+        output = "dev.gcl"
+
+        [targets.test]
+        source = "./tests"
+        output = "test.gcl"
+    "#;
+    let m = recipe::manifest_from_str(text).expect("manifest must parse");
+    let err = m
+        .select(Some("missing"))
+        .expect_err("unknown target must be an error");
+    let msg = err.to_string();
+    // BTreeMap guarantees sorted order: dev, release, test
+    assert!(
+        msg.contains("dev, release, test"),
+        "error must list available targets in sorted order: {msg}"
+    );
+}
+
+#[test]
+fn manifest_error_invalid_default_target() {
+    use git_closure::recipe;
+    let text = r#"
+        default_target = "missing"
+
+        [targets.dev]
+        source = "."
+        output = "dev.gcl"
+    "#;
+    let m = recipe::manifest_from_str(text)
+        .expect("manifest_from_str must succeed even with invalid default_target");
+    let err = m
+        .select(None)
+        .expect_err("select(None) must fail when default_target does not exist");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("missing") && (msg.contains("not defined") || msg.contains("targets")),
+        "error must mention the missing default_target name: {msg}"
+    );
+}
+
+#[test]
+fn manifest_rejects_unknown_top_level_field() {
+    use git_closure::recipe;
+    // "default_targte" is a misspelling of "default_target"
+    let text = r#"
+        default_targte = "dev"
+
+        [targets.dev]
+        source = "."
+        output = "out.gcl"
+    "#;
+    assert!(
+        recipe::manifest_from_str(text).is_err(),
+        "unknown top-level manifest field must be rejected"
+    );
+}
+
+#[test]
+fn manifest_rejects_mixed_format() {
+    use git_closure::recipe;
+    let text = r#"
+        source = "."
+        output = "out.gcl"
+
+        [targets.dev]
+        source = "."
+        output = "dev.gcl"
+    "#;
+    assert!(
+        recipe::manifest_from_str(text).is_err(),
+        "mixing top-level source/output with [targets.*] must be rejected"
+    );
+}
+
+#[test]
+fn manifest_single_target_auto_selected_without_default() {
+    use git_closure::recipe;
+    let text = r#"
+        [targets.dev]
+        source = "."
+        output = "dev.gcl"
+    "#;
+    let m = recipe::manifest_from_str(text).expect("single-target manifest must parse");
+    let r = m
+        .select(None)
+        .expect("single target must be auto-selected without default_target");
+    assert_eq!(r.output, "dev.gcl");
+}
+
+#[test]
+fn manifest_legacy_flat_file_is_backward_compatible() {
+    use git_closure::{parse_snapshot, recipe};
+    let src = tempfile::TempDir::new().unwrap();
+    std::fs::write(src.path().join("hello.txt"), b"hello\n").unwrap();
+    let out = tempfile::TempDir::new().unwrap();
+    let output = out.path().join("out.gcl");
+    // Legacy flat format (Phase 6/7 style)
+    let text = format!(
+        "source = {:?}\noutput = {:?}\n",
+        src.path().to_str().unwrap(),
+        output.to_str().unwrap(),
+    );
+    let m = recipe::manifest_from_str(&text).expect("legacy flat file must parse as manifest");
+    assert_eq!(
+        m.targets.len(),
+        1,
+        "legacy file must produce exactly one target"
+    );
+    let r = m
+        .select(None)
+        .expect("legacy single-target manifest must auto-select");
+    recipe::execute(r).expect("legacy manifest must execute");
+    assert!(output.exists(), "output must be created");
+    let gcl = std::fs::read_to_string(&output).unwrap();
+    let (_header, files) = parse_snapshot(&gcl).expect("output must be valid .gcl");
+    assert!(files.iter().any(|f| f.path == "hello.txt"));
+}
+
+#[test]
+fn manifest_from_file_resolves_paths_per_target() {
+    use git_closure::recipe;
+    let dir = tempfile::TempDir::new().unwrap();
+    let manifest_path = dir.path().join("manifest.toml");
+    std::fs::write(
+        &manifest_path,
+        b"[targets.dev]\nsource = \"src\"\noutput = \"out/dev.gcl\"\n\
+          [targets.release]\nsource = \"gh:owner/repo\"\noutput = \"out/release.gcl\"\n",
+    )
+    .unwrap();
+    let m = recipe::manifest_from_file(&manifest_path).expect("manifest_from_file must succeed");
+    let dev = m
+        .select(Some("dev"))
+        .expect("dev target must be selectable");
+    assert!(
+        std::path::Path::new(&dev.output).is_absolute(),
+        "dev output must be absolute after manifest_from_file()"
+    );
+    assert!(
+        dev.output.ends_with("dev.gcl"),
+        "dev output filename must be preserved"
+    );
+    assert!(
+        std::path::Path::new(&dev.source).is_absolute(),
+        "dev source must be resolved to absolute path"
+    );
+    // Remote source must be preserved
+    let release = m
+        .select(Some("release"))
+        .expect("release target must be selectable");
+    assert_eq!(
+        release.source, "gh:owner/repo",
+        "remote source must not be rewritten"
+    );
+}
+
+#[test]
+fn manifest_executes_selected_target_end_to_end() {
+    use git_closure::{parse_snapshot, recipe};
+    let src = tempfile::TempDir::new().unwrap();
+    std::fs::write(src.path().join("data.txt"), b"phase8\n").unwrap();
+    let out = tempfile::TempDir::new().unwrap();
+    let output = out.path().join("out.gcl");
+    let text = format!(
+        "[targets.snap]\nsource = {:?}\noutput = {:?}\n",
+        src.path().to_str().unwrap(),
+        output.to_str().unwrap(),
+    );
+    let m = recipe::manifest_from_str(&text).expect("manifest must parse");
+    let r = m
+        .select(Some("snap"))
+        .expect("snap target must be selectable");
+    recipe::execute(r).expect("execute must succeed");
+    assert!(output.exists(), "output must be created");
+    let gcl = std::fs::read_to_string(&output).unwrap();
+    let (_header, files) = parse_snapshot(&gcl).expect("output must be valid .gcl");
+    assert!(files.iter().any(|f| f.path == "data.txt"));
+}
+
 // ── Functional ────────────────────────────────────────────────────────────────
 
 // Functional: recipe executes compile path end-to-end; checks artifact content.
