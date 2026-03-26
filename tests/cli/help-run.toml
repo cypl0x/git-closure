@@ -2,7 +2,7 @@ bin.name = "git-closure"
 args = ["run", "--help"]
 status = "success"
 stdout = """
-Execute a recipe file
+Execute a recipe or manifest file
 
 Usage: git-closure run [OPTIONS] <RECIPE>
 
