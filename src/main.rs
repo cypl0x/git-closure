@@ -717,18 +717,15 @@ pub(crate) fn derive_output_path(source: &str) -> PathBuf {
 }
 
 fn format_targets_text(manifest: &git_closure::Manifest) -> String {
-    use git_closure::recipe::{RecipeFormat, RecipeMode};
+    use git_closure::recipe::RecipeMode;
     let max_name = manifest.targets.keys().map(|k| k.len()).max().unwrap_or(0);
     let mut out = String::new();
     for (name, recipe) in &manifest.targets {
         let mode_str = match recipe.mode {
-            RecipeMode::Compile => "compile",
-            RecipeMode::Build => "build  ",
+            RecipeMode::Build => "build  ", // padded to "compile" width
+            _ => recipe.mode.as_str(),
         };
-        let fmt_str = match recipe.format {
-            RecipeFormat::Gcl => "gcl",
-            RecipeFormat::Nar => "nar",
-        };
+        let fmt_str = recipe.format.as_str();
         let default_marker = if manifest.default_target.as_deref() == Some(name.as_str()) {
             "  (default)"
         } else {
@@ -746,42 +743,8 @@ fn format_targets_text(manifest: &git_closure::Manifest) -> String {
     out
 }
 
-#[derive(Debug, Serialize)]
-struct TargetsJson {
-    default_target: Option<String>,
-    targets: Vec<TargetJson>,
-}
-
-#[derive(Debug, Serialize)]
-struct TargetJson {
-    name: String,
-    mode: &'static str,
-    format: &'static str,
-    is_default: bool,
-}
-
 fn targets_json(manifest: &git_closure::Manifest) -> String {
-    use git_closure::recipe::{RecipeFormat, RecipeMode};
-    let payload = TargetsJson {
-        default_target: manifest.default_target.clone(),
-        targets: manifest
-            .targets
-            .iter()
-            .map(|(name, recipe)| TargetJson {
-                name: name.clone(),
-                mode: match recipe.mode {
-                    RecipeMode::Compile => "compile",
-                    RecipeMode::Build => "build",
-                },
-                format: match recipe.format {
-                    RecipeFormat::Gcl => "gcl",
-                    RecipeFormat::Nar => "nar",
-                },
-                is_default: manifest.default_target.as_deref() == Some(name.as_str()),
-            })
-            .collect(),
-    };
-    serde_json::to_string_pretty(&payload).expect("serialize targets JSON")
+    serde_json::to_string_pretty(&manifest.summary()).expect("serialize targets JSON")
 }
 
 fn print_completion(shell: CompletionShell) {
