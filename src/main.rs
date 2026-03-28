@@ -182,6 +182,14 @@ enum Commands {
         )]
         format: ExportFormat,
     },
+    #[command(
+        about = "List targets defined in a recipe or manifest file",
+        visible_alias = "t"
+    )]
+    Targets {
+        #[arg(help = "Recipe or manifest file (.toml)")]
+        file: PathBuf,
+    },
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -405,6 +413,10 @@ fn run() -> Result<(), GitClosureError> {
             format: _format, // NAR is the only format; field reserved for future extension
         } => {
             export_snapshot_as_nar(&snapshot, &output)?;
+        }
+        Commands::Targets { file } => {
+            let manifest = recipe::manifest_from_file(&file)?;
+            print!("{}", format_targets_text(&manifest));
         }
     }
 
@@ -696,6 +708,36 @@ pub(crate) fn derive_output_path(source: &str) -> PathBuf {
     }
 
     PathBuf::from("snapshot.gcl")
+}
+
+fn format_targets_text(manifest: &git_closure::Manifest) -> String {
+    use git_closure::recipe::{RecipeFormat, RecipeMode};
+    let max_name = manifest.targets.keys().map(|k| k.len()).max().unwrap_or(0);
+    let mut out = String::new();
+    for (name, recipe) in &manifest.targets {
+        let mode_str = match recipe.mode {
+            RecipeMode::Compile => "compile",
+            RecipeMode::Build => "build  ",
+        };
+        let fmt_str = match recipe.format {
+            RecipeFormat::Gcl => "gcl",
+            RecipeFormat::Nar => "nar",
+        };
+        let default_marker = if manifest.default_target.as_deref() == Some(name.as_str()) {
+            "  (default)"
+        } else {
+            ""
+        };
+        out.push_str(&format!(
+            "  {:<width$}  {}  {}{}\n",
+            name,
+            mode_str,
+            fmt_str,
+            default_marker,
+            width = max_name
+        ));
+    }
+    out
 }
 
 fn print_completion(shell: CompletionShell) {
