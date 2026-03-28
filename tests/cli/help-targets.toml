@@ -1,0 +1,14 @@
+bin.name = "git-closure"
+args = ["targets", "--help"]
+status = "success"
+stdout = """
+List targets defined in a recipe or manifest file
+
+Usage: git-closure targets <FILE>
+
+Arguments:
+  <FILE>  Recipe or manifest file (.toml)
+
+Options:
+  -h, --help  Print help
+"""

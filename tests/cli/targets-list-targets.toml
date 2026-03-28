@@ -1,0 +1,10 @@
+bin.name = "git-closure"
+args = ["targets", "manifest.toml"]
+status = "success"
+stdout = """
+  bundle   compile  nar
+  dev      compile  gcl  (default)
+  release  build    gcl
+"""
+stderr = ""
+fs.sandbox = true

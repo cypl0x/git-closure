@@ -699,3 +699,34 @@ fn recipe_executes_compile_to_gcl() {
         .expect("hello.txt must be present in recipe output");
     assert_eq!(entry.content, b"hello world\n");
 }
+
+// ── Phase 9: targets command data surface ─────────────────────────────────────
+
+#[test]
+fn manifest_targets_iter_is_sorted_and_exposes_mode_and_format() {
+    use git_closure::recipe::{self, RecipeFormat, RecipeMode};
+    let text = r#"
+        default_target = "dev"
+        [targets.release]
+        source = "gh:owner/repo"
+        output = "release.gcl"
+        mode   = "build"
+        [targets.dev]
+        source = "."
+        output = "dev.gcl"
+        [targets.bundle]
+        source = "."
+        output = "bundle.nar"
+        format = "nar"
+    "#;
+    let m = recipe::manifest_from_str(text).unwrap();
+    let names: Vec<&str> = m.targets.keys().map(|s| s.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["bundle", "dev", "release"],
+        "targets must be sorted (BTreeMap)"
+    );
+    assert_eq!(m.targets["release"].mode, RecipeMode::Build);
+    assert_eq!(m.targets["bundle"].format, RecipeFormat::Nar);
+    assert_eq!(m.default_target.as_deref(), Some("dev"));
+}
