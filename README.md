@@ -19,6 +19,9 @@ emailed, archived, diffed, and materialized back into a filesystem tree.
 - `summary` (`s`) - print compact snapshot metadata (`text` or `--json`)
 - `export` (`e`) - export a snapshot to another archive format (currently: NAR)
 - `completion` (`c`) - generate shell completions (bash/zsh)
+- `compile` (`C`) - provenance-light snapshot via IR pipeline (no git metadata; `gcl` or `nar`)
+- `run` (`R`) - execute a recipe or manifest file; `--target <name>` selects a named target
+- `targets` (`t`) - list targets defined in a manifest (`text` or `--json`)
 
 ## Quick Start
 
@@ -116,6 +119,121 @@ In a git repository, `build` follows git-tracked semantics by default:
 - excludes untracked files unless `--include-untracked`
 - still excludes ignored files when `--include-untracked` is set
 - with `--require-clean`, fails if selected source scope has uncommitted changes
+
+## compile — Provenance-light Snapshots
+
+`compile` takes a source and writes a snapshot via the backend-agnostic IR pipeline.
+It does **not** read or inject git metadata (`git-rev`, `git-branch`).
+The artifact carries content-addressed identity only.
+Use `build` for git-aware snapshots.
+
+```bash
+# Write a .gcl snapshot
+git-closure compile src --output snapshot.gcl
+
+# Write a NAR archive instead
+git-closure compile src --output snapshot.nar --format nar
+```
+
+Supported `--format` values: `gcl` (default), `nar`.
+Provider selection (`--provider`) works the same as `build`.
+
+## Recipes and Manifests
+
+A recipe or manifest file is a TOML file that describes one or more snapshot targets.
+Pass it to `run` for execution.
+
+### Single-target recipe (legacy flat format)
+
+```toml
+# recipe.toml
+source   = "."
+output   = "snapshot.gcl"
+mode     = "compile"    # optional — default
+format   = "gcl"        # optional — default
+provider = "auto"       # optional — default
+```
+
+```bash
+git-closure run recipe.toml
+```
+
+### Multi-target manifest
+
+```toml
+# manifest.toml
+default_target = "dev"
+
+[targets.dev]
+source = "."
+output = "dev.gcl"
+
+[targets.release]
+source = "gh:owner/repo@main"
+output = "release.gcl"
+mode   = "build"
+```
+
+```bash
+# Runs the default target ("dev")
+git-closure run manifest.toml
+
+# Runs a named target explicitly
+git-closure run manifest.toml --target release
+```
+
+### Recipe mode field
+
+`mode` controls the execution path per target:
+
+| Value | Path | git metadata | Formats |
+|-------|------|-------------|---------|
+| `"compile"` (default) | provenance-light | none injected | `gcl`, `nar` |
+| `"build"` | git-aware | `git-rev`/`git-branch` where available | `gcl` only |
+
+`mode = "build"` + `format = "nar"` is rejected with a clear error before any I/O.
+
+### Path resolution
+
+Paths in recipe/manifest files are resolved relative to the file's parent directory,
+regardless of the caller's working directory. This makes committed recipe files
+location-independent.
+
+## targets — Target Discovery
+
+List the targets defined in a recipe or manifest file:
+
+```bash
+# Human-readable text (sorted, with default marker)
+git-closure targets manifest.toml
+
+# Machine-readable JSON
+git-closure targets manifest.toml --json
+```
+
+Text output example:
+
+```
+  bundle   compile  nar
+  dev      compile  gcl  (default)
+  release  build    gcl
+```
+
+JSON output example:
+
+```json
+{
+  "default_target": "dev",
+  "targets": [
+    { "name": "bundle",  "mode": "compile", "format": "nar", "is_default": false },
+    { "name": "dev",     "mode": "compile", "format": "gcl", "is_default": true  },
+    { "name": "release", "mode": "build",   "format": "gcl", "is_default": false }
+  ]
+}
+```
+
+Targets are always listed in deterministic sorted order.
+Legacy single-target recipe files are shown as a single target named `default`.
 
 ## Format and Integrity
 
@@ -354,7 +472,7 @@ nix shell nixpkgs#cargo-fuzz -c cargo fuzz run fuzz_lexical_normalize
 
 ## Roadmap
 
-- v0.1 (current): build/materialize/verify/list/diff/fmt/render/summary/export/completion
+- v0.1 (current): build/materialize/verify/list/diff/fmt/render/summary/export/completion/compile/run/targets
 - post-v0.1 [planned]: richer remote providers, NAR import/round-trip,
   and further performance/security hardening
 
