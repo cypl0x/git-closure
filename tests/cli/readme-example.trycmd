@@ -17,6 +17,7 @@ Commands:
   compile      Compile a source into an artifact via the IR pipeline (gcl or nar) [aliases: C]
   run          Execute a recipe or manifest file [aliases: R]
   export       Export a snapshot to another archive format (currently: NAR) [aliases: e]
+  targets      List targets defined in a recipe or manifest file [aliases: t]
   help         Print this message or the help of the given subcommand(s)
 
 Options:
