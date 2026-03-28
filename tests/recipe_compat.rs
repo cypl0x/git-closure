@@ -734,3 +734,116 @@ fn manifest_targets_iter_is_sorted_and_exposes_mode_and_format() {
     assert_eq!(m.targets["bundle"].format, RecipeFormat::Nar);
     assert_eq!(m.default_target.as_deref(), Some("dev"));
 }
+
+// ── Phase 11: ManifestSummary / TargetSummary ─────────────────────────────────
+
+#[test]
+fn manifest_summary_accessible_via_crate_root() {
+    let _ = std::mem::size_of::<git_closure::ManifestSummary>();
+}
+
+#[test]
+fn target_summary_accessible_via_crate_root() {
+    let _ = std::mem::size_of::<git_closure::TargetSummary>();
+}
+
+#[test]
+fn manifest_summary_has_correct_shape() {
+    use git_closure::recipe;
+    let text = r#"
+        default_target = "dev"
+        [targets.release]
+        source = "gh:owner/repo"
+        output = "release.gcl"
+        mode = "build"
+        [targets.dev]
+        source = "."
+        output = "dev.gcl"
+        [targets.bundle]
+        source = "."
+        output = "bundle.nar"
+        format = "nar"
+    "#;
+    let manifest = recipe::manifest_from_str(text).unwrap();
+    let summary = manifest.summary();
+    assert_eq!(summary.default_target.as_deref(), Some("dev"));
+    assert_eq!(summary.targets.len(), 3);
+}
+
+#[test]
+fn manifest_summary_targets_are_sorted_by_name() {
+    use git_closure::recipe;
+    let text = r#"
+        [targets.zzz]
+        source = "."
+        output = "zzz.gcl"
+        [targets.aaa]
+        source = "."
+        output = "aaa.gcl"
+    "#;
+    let manifest = recipe::manifest_from_str(text).unwrap();
+    let summary = manifest.summary();
+    assert_eq!(summary.targets[0].name, "aaa");
+    assert_eq!(summary.targets[1].name, "zzz");
+}
+
+#[test]
+fn manifest_summary_is_default_reflects_default_target() {
+    use git_closure::recipe;
+    let text = r#"
+        default_target = "dev"
+        [targets.dev]
+        source = "."
+        output = "dev.gcl"
+        [targets.release]
+        source = "gh:owner/repo"
+        output = "release.gcl"
+    "#;
+    let manifest = recipe::manifest_from_str(text).unwrap();
+    let summary = manifest.summary();
+    let dev = summary.targets.iter().find(|t| t.name == "dev").unwrap();
+    let release = summary.targets.iter().find(|t| t.name == "release").unwrap();
+    assert!(dev.is_default);
+    assert!(!release.is_default);
+}
+
+#[test]
+fn manifest_summary_legacy_flat_produces_default_target() {
+    use git_closure::recipe;
+    let text = r#"
+        source = "."
+        output = "out.gcl"
+    "#;
+    let manifest = recipe::manifest_from_str(text).unwrap();
+    let summary = manifest.summary();
+    assert_eq!(summary.default_target.as_deref(), Some("default"));
+    assert_eq!(summary.targets.len(), 1);
+    assert_eq!(summary.targets[0].name, "default");
+    assert!(summary.targets[0].is_default);
+}
+
+#[test]
+fn recipe_mode_as_str_returns_canonical_strings() {
+    use git_closure::recipe::RecipeMode;
+    assert_eq!(RecipeMode::Compile.as_str(), "compile");
+    assert_eq!(RecipeMode::Build.as_str(), "build");
+}
+
+#[test]
+fn recipe_format_as_str_returns_canonical_strings() {
+    use git_closure::recipe::RecipeFormat;
+    assert_eq!(RecipeFormat::Gcl.as_str(), "gcl");
+    assert_eq!(RecipeFormat::Nar.as_str(), "nar");
+}
+
+#[test]
+fn recipe_mode_serialize_matches_as_str() {
+    use git_closure::recipe::RecipeMode;
+    for (mode, expected) in [
+        (RecipeMode::Compile, "compile"),
+        (RecipeMode::Build, "build"),
+    ] {
+        let json = serde_json::to_string(&mode).expect("serialize mode");
+        assert_eq!(json, format!("\"{}\"", expected));
+    }
+}
