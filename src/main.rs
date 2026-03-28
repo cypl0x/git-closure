@@ -189,6 +189,8 @@ enum Commands {
     Targets {
         #[arg(help = "Recipe or manifest file (.toml)")]
         file: PathBuf,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
     },
 }
 
@@ -414,9 +416,13 @@ fn run() -> Result<(), GitClosureError> {
         } => {
             export_snapshot_as_nar(&snapshot, &output)?;
         }
-        Commands::Targets { file } => {
+        Commands::Targets { file, json } => {
             let manifest = recipe::manifest_from_file(&file)?;
-            print!("{}", format_targets_text(&manifest));
+            if json {
+                println!("{}", targets_json(&manifest));
+            } else {
+                print!("{}", format_targets_text(&manifest));
+            }
         }
     }
 
@@ -740,6 +746,44 @@ fn format_targets_text(manifest: &git_closure::Manifest) -> String {
     out
 }
 
+#[derive(Debug, Serialize)]
+struct TargetsJson {
+    default_target: Option<String>,
+    targets: Vec<TargetJson>,
+}
+
+#[derive(Debug, Serialize)]
+struct TargetJson {
+    name: String,
+    mode: &'static str,
+    format: &'static str,
+    is_default: bool,
+}
+
+fn targets_json(manifest: &git_closure::Manifest) -> String {
+    use git_closure::recipe::{RecipeFormat, RecipeMode};
+    let payload = TargetsJson {
+        default_target: manifest.default_target.clone(),
+        targets: manifest
+            .targets
+            .iter()
+            .map(|(name, recipe)| TargetJson {
+                name: name.clone(),
+                mode: match recipe.mode {
+                    RecipeMode::Compile => "compile",
+                    RecipeMode::Build => "build",
+                },
+                format: match recipe.format {
+                    RecipeFormat::Gcl => "gcl",
+                    RecipeFormat::Nar => "nar",
+                },
+                is_default: manifest.default_target.as_deref() == Some(name.as_str()),
+            })
+            .collect(),
+    };
+    serde_json::to_string_pretty(&payload).expect("serialize targets JSON")
+}
+
 fn print_completion(shell: CompletionShell) {
     let mut cmd = Cli::command();
     let bin_name = cmd.get_name().to_string();
@@ -1030,5 +1074,38 @@ mod tests {
         let value: Value = serde_json::from_str(&json).expect("summary JSON must parse");
         assert_eq!(value["file_count"], Value::from(3));
         assert_eq!(value["largest_files"][0][0], Value::from("a.txt"));
+    }
+
+    #[test]
+    fn targets_json_produces_stable_schema() {
+        use git_closure::recipe;
+        let text = r#"
+            default_target = "dev"
+            [targets.release]
+            source = "gh:owner/repo"
+            output = "release.gcl"
+            mode = "build"
+            [targets.dev]
+            source = "."
+            output = "dev.gcl"
+            [targets.bundle]
+            source = "."
+            output = "bundle.nar"
+            format = "nar"
+        "#;
+        let manifest = recipe::manifest_from_str(text).unwrap();
+        let json_str = super::targets_json(&manifest);
+        let v: serde_json::Value = serde_json::from_str(&json_str).expect("valid JSON");
+        assert_eq!(v["default_target"], "dev");
+        let targets = v["targets"].as_array().unwrap();
+        assert_eq!(targets.len(), 3);
+        // BTreeMap guarantees sorted order
+        assert_eq!(targets[0]["name"], "bundle");
+        assert_eq!(targets[0]["format"], "nar");
+        assert_eq!(targets[0]["is_default"], false);
+        assert_eq!(targets[1]["name"], "dev");
+        assert_eq!(targets[1]["is_default"], true);
+        assert_eq!(targets[2]["name"], "release");
+        assert_eq!(targets[2]["mode"], "build");
     }
 }
