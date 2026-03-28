@@ -107,6 +107,7 @@ fn recipe_from_file_preserves_remote_source_unchanged() {
     .unwrap();
 
     let r = recipe::from_file(&recipe_path).unwrap();
+    let dir_canon = dir.path().canonicalize().unwrap();
 
     assert_eq!(
         r.source, "gh:owner/repo",
@@ -124,7 +125,7 @@ fn recipe_from_file_preserves_remote_source_unchanged() {
     );
     assert_eq!(
         output_path.parent().unwrap(),
-        dir.path(),
+        dir_canon,
         "output must resolve to the recipe file's directory"
     );
 }
@@ -143,8 +144,9 @@ fn recipe_from_file_resolves_path_prefix_source() {
     .unwrap();
 
     let r = recipe::from_file(&recipe_path).unwrap();
+    let dir_canon = dir.path().canonicalize().unwrap();
 
-    let expected = format!("path:{}", dir.path().join("flake").display());
+    let expected = format!("path:{}", dir_canon.join("flake").display());
     assert_eq!(
         r.source, expected,
         "path: source must be resolved recipe-file-relative"
@@ -156,7 +158,7 @@ fn recipe_from_file_resolves_path_prefix_source() {
     );
     assert_eq!(
         std::path::Path::new(&r.output).parent().unwrap(),
-        dir.path(),
+        dir_canon,
         "output must resolve to the recipe file's directory"
     );
 }
@@ -175,8 +177,9 @@ fn recipe_from_file_resolves_nix_path_source() {
     .unwrap();
 
     let r = recipe::from_file(&recipe_path).unwrap();
+    let dir_canon = dir.path().canonicalize().unwrap();
 
-    let expected = format!("nix:path:{}", dir.path().join("flake").display());
+    let expected = format!("nix:path:{}", dir_canon.join("flake").display());
     assert_eq!(
         r.source, expected,
         "nix:path: source must be resolved recipe-file-relative"
@@ -203,8 +206,9 @@ fn recipe_from_file_resolves_local_git_suffix_source() {
     .unwrap();
 
     let r = recipe::from_file(&recipe_path).unwrap();
+    let dir_canon = dir.path().canonicalize().unwrap();
 
-    let expected = dir.path().join("repo.git").to_string_lossy().into_owned();
+    let expected = dir_canon.join("repo.git").to_string_lossy().into_owned();
     assert_eq!(
         r.source, expected,
         "./repo.git must be resolved recipe-file-relative"
