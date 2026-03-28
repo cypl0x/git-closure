@@ -41,7 +41,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::compile::{compile_source, CompileFormat};
 use crate::error::GitClosureError;
@@ -68,7 +68,7 @@ pub struct Recipe {
 }
 
 /// Output format for a recipe.
-#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum RecipeFormat {
     #[default]
@@ -95,12 +95,56 @@ pub enum RecipeProvider {
 /// - `Build`: routes through [`crate::gcl::build::build_snapshot_from_source`],
 ///   using the git-aware build path and recording git metadata where available.
 ///   Only `gcl` output is supported in Phase 7.
-#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum RecipeMode {
     #[default]
     Compile,
     Build,
+}
+
+impl RecipeMode {
+    /// Returns the canonical lowercase string name, matching the serde wire format.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RecipeMode::Compile => "compile",
+            RecipeMode::Build => "build",
+        }
+    }
+}
+
+impl RecipeFormat {
+    /// Returns the canonical lowercase string name, matching the serde wire format.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RecipeFormat::Gcl => "gcl",
+            RecipeFormat::Nar => "nar",
+        }
+    }
+}
+
+/// A compact, ordered projection of manifest targets for discovery and reporting.
+///
+/// Produced by [`Manifest::summary`]. Fields are ordered by target name (deterministic,
+/// inheriting [`BTreeMap`] iteration order from [`Manifest::targets`]).
+///
+/// Fields included: `default_target`, per-target `name`/`mode`/`format`/`is_default`.
+/// Fields excluded: `source`, `output`, `provider` (path-resolved execution details).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[non_exhaustive]
+pub struct ManifestSummary {
+    pub default_target: Option<String>,
+    pub targets: Vec<TargetSummary>,
+}
+
+/// A single target entry in a [`ManifestSummary`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[non_exhaustive]
+pub struct TargetSummary {
+    pub name: String,
+    pub mode: RecipeMode,
+    pub format: RecipeFormat,
+    pub is_default: bool,
 }
 
 /// A manifest of named snapshot targets, loaded from a TOML file.
@@ -120,6 +164,26 @@ pub struct Manifest {
 }
 
 impl Manifest {
+    /// Produce a compact introspection projection of this manifest.
+    ///
+    /// Targets are listed in sorted name order (matching [`BTreeMap`] iteration order).
+    /// `is_default` is set on the target named by `default_target`, if any.
+    pub fn summary(&self) -> ManifestSummary {
+        ManifestSummary {
+            default_target: self.default_target.clone(),
+            targets: self
+                .targets
+                .iter()
+                .map(|(name, recipe)| TargetSummary {
+                    name: name.clone(),
+                    mode: recipe.mode.clone(),
+                    format: recipe.format.clone(),
+                    is_default: self.default_target.as_deref() == Some(name.as_str()),
+                })
+                .collect(),
+        }
+    }
+
     /// Select a target by name, applying default / single-target ergonomics when
     /// `name` is `None`.
     ///

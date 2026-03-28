@@ -802,7 +802,11 @@ fn manifest_summary_is_default_reflects_default_target() {
     let manifest = recipe::manifest_from_str(text).unwrap();
     let summary = manifest.summary();
     let dev = summary.targets.iter().find(|t| t.name == "dev").unwrap();
-    let release = summary.targets.iter().find(|t| t.name == "release").unwrap();
+    let release = summary
+        .targets
+        .iter()
+        .find(|t| t.name == "release")
+        .unwrap();
     assert!(dev.is_default);
     assert!(!release.is_default);
 }

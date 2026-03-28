@@ -95,7 +95,9 @@ pub use materialize::{
     verify_snapshot_parsed, verify_snapshot_with_root, MaterializeOptions, MaterializePolicy,
 };
 pub use recipe::Manifest;
+pub use recipe::ManifestSummary;
 pub use recipe::Recipe;
+pub use recipe::TargetSummary;
 
 #[doc(hidden)]
 pub fn fuzz_parse_snapshot(input: &str) {
