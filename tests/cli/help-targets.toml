@@ -4,11 +4,12 @@ status = "success"
 stdout = """
 List targets defined in a recipe or manifest file
 
-Usage: git-closure targets <FILE>
+Usage: git-closure targets [OPTIONS] <FILE>
 
 Arguments:
   <FILE>  Recipe or manifest file (.toml)
 
 Options:
+      --json  Output JSON
   -h, --help  Print help
 """

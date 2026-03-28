@@ -1,0 +1,18 @@
+bin.name = "git-closure"
+args = ["targets", "recipe.toml", "--json"]
+status = "success"
+stdout = """
+{
+  "default_target": "default",
+  "targets": [
+    {
+      "name": "default",
+      "mode": "compile",
+      "format": "gcl",
+      "is_default": true
+    }
+  ]
+}
+"""
+stderr = ""
+fs.sandbox = true

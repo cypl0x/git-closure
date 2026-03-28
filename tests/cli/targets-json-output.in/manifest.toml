@@ -1,0 +1,15 @@
+default_target = "dev"
+
+[targets.release]
+source = "src"
+output = "release.gcl"
+mode = "build"
+
+[targets.dev]
+source = "src"
+output = "dev.gcl"
+
+[targets.bundle]
+source = "src"
+output = "bundle.nar"
+format = "nar"
