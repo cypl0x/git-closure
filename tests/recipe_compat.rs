@@ -851,3 +851,145 @@ fn recipe_mode_serialize_matches_as_str() {
         assert_eq!(json, format!("\"{}\"", expected));
     }
 }
+
+// ── Phase 12: TargetDetail / Manifest::inspect() ──────────────────────────────
+
+#[test]
+fn target_detail_accessible_via_crate_root() {
+    let _ = std::mem::size_of::<git_closure::TargetDetail>();
+}
+
+#[test]
+fn manifest_inspect_returns_detail_for_named_target() {
+    use git_closure::recipe;
+    let text = r#"
+        default_target = "dev"
+        [targets.dev]
+        source = "."
+        output = "dev.gcl"
+        [targets.release]
+        source = "gh:owner/repo"
+        output = "release.gcl"
+        mode = "build"
+    "#;
+    let manifest = recipe::manifest_from_str(text).unwrap();
+    let detail = manifest.inspect(Some("release")).unwrap();
+    assert_eq!(detail.name, "release");
+    assert_eq!(detail.mode, recipe::RecipeMode::Build);
+    assert_eq!(detail.format, recipe::RecipeFormat::Gcl);
+    assert!(!detail.is_default);
+    assert_eq!(detail.source, "gh:owner/repo");
+    assert_eq!(detail.output, "release.gcl");
+}
+
+#[test]
+fn manifest_inspect_is_default_reflects_default_target() {
+    use git_closure::recipe;
+    let text = r#"
+        default_target = "dev"
+        [targets.dev]
+        source = "."
+        output = "dev.gcl"
+        [targets.release]
+        source = "gh:owner/repo"
+        output = "release.gcl"
+    "#;
+    let manifest = recipe::manifest_from_str(text).unwrap();
+    assert!(manifest.inspect(Some("dev")).unwrap().is_default);
+    assert!(!manifest.inspect(Some("release")).unwrap().is_default);
+}
+
+#[test]
+fn manifest_inspect_none_uses_default_target() {
+    use git_closure::recipe;
+    let text = r#"
+        default_target = "dev"
+        [targets.dev]
+        source = "."
+        output = "dev.gcl"
+        [targets.release]
+        source = "gh:owner/repo"
+        output = "release.gcl"
+    "#;
+    let manifest = recipe::manifest_from_str(text).unwrap();
+    let detail = manifest.inspect(None).unwrap();
+    assert_eq!(detail.name, "dev");
+}
+
+#[test]
+fn manifest_inspect_unknown_target_returns_error() {
+    use git_closure::recipe;
+    let text = r#"
+        [targets.dev]
+        source = "."
+        output = "dev.gcl"
+    "#;
+    let manifest = recipe::manifest_from_str(text).unwrap();
+    assert!(manifest.inspect(Some("nonexistent")).is_err());
+}
+
+#[test]
+fn manifest_inspect_legacy_flat_returns_default_target_detail() {
+    use git_closure::recipe;
+    let text = r#"
+        source = "."
+        output = "out.gcl"
+    "#;
+    let manifest = recipe::manifest_from_str(text).unwrap();
+    let detail = manifest.inspect(None).unwrap();
+    assert_eq!(detail.name, "default");
+    assert!(detail.is_default);
+    assert_eq!(detail.source, ".");
+}
+
+#[test]
+fn manifest_inspect_includes_provider_field() {
+    use git_closure::recipe;
+    let text = r#"
+        [targets.api]
+        source = "gh:owner/repo"
+        output = "api.gcl"
+        provider = "github-api"
+    "#;
+    let manifest = recipe::manifest_from_str(text).unwrap();
+    let detail = manifest.inspect(Some("api")).unwrap();
+    assert_eq!(detail.provider, recipe::RecipeProvider::GithubApi);
+}
+
+#[test]
+fn recipe_provider_as_str_returns_canonical_strings() {
+    use git_closure::recipe::RecipeProvider;
+    assert_eq!(RecipeProvider::Auto.as_str(), "auto");
+    assert_eq!(RecipeProvider::Local.as_str(), "local");
+    assert_eq!(RecipeProvider::GitClone.as_str(), "git-clone");
+    assert_eq!(RecipeProvider::Nix.as_str(), "nix");
+    assert_eq!(RecipeProvider::GithubApi.as_str(), "github-api");
+}
+
+#[test]
+fn manifest_inspect_from_file_returns_resolved_local_paths() {
+    use git_closure::recipe;
+    use tempfile::TempDir;
+    let dir = TempDir::new().unwrap();
+    let dir_canon = dir.path().canonicalize().unwrap();
+    let manifest_text = "[targets.dev]\nsource = \"./src\"\noutput = \"dev.gcl\"\n";
+    let manifest_path = dir_canon.join("manifest.toml");
+    std::fs::write(&manifest_path, manifest_text).unwrap();
+    let manifest = recipe::manifest_from_file(&manifest_path).unwrap();
+    let detail = manifest.inspect(Some("dev")).unwrap();
+    assert!(
+        std::path::Path::new(&detail.source).is_absolute(),
+        "local source should be resolved to absolute path: {}",
+        detail.source
+    );
+    assert!(
+        std::path::Path::new(&detail.output).is_absolute(),
+        "output should be resolved to absolute path: {}",
+        detail.output
+    );
+    assert!(
+        detail.output.ends_with("dev.gcl"),
+        "output should end with dev.gcl: {}",
+        detail.output
+    );
+}
