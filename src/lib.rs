@@ -97,6 +97,7 @@ pub use materialize::{
 pub use recipe::Manifest;
 pub use recipe::ManifestSummary;
 pub use recipe::Recipe;
+pub use recipe::TargetDetail;
 pub use recipe::TargetSummary;
 
 #[doc(hidden)]

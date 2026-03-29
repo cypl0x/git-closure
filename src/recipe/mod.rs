@@ -77,7 +77,7 @@ pub enum RecipeFormat {
 }
 
 /// Provider kind for a recipe.
-#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum RecipeProvider {
     #[default]
@@ -86,6 +86,19 @@ pub enum RecipeProvider {
     GitClone,
     Nix,
     GithubApi,
+}
+
+impl RecipeProvider {
+    /// Returns the canonical kebab-case string name, matching the serde wire format.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RecipeProvider::Auto => "auto",
+            RecipeProvider::Local => "local",
+            RecipeProvider::GitClone => "git-clone",
+            RecipeProvider::Nix => "nix",
+            RecipeProvider::GithubApi => "github-api",
+        }
+    }
 }
 
 /// Execution mode for a recipe.
@@ -147,6 +160,27 @@ pub struct TargetSummary {
     pub is_default: bool,
 }
 
+/// Full resolved detail for a single manifest target.
+///
+/// Produced by [`Manifest::inspect`]. Unlike [`TargetSummary`], this includes
+/// `source`, `output`, and `provider` — the execution-facing fields that may
+/// be resolved to absolute paths by [`manifest_from_file`].
+///
+/// Path fields (`source`, `output`) are absolute when the manifest was loaded
+/// via [`manifest_from_file`]; they are returned as-is when loaded via
+/// [`manifest_from_str`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[non_exhaustive]
+pub struct TargetDetail {
+    pub name: String,
+    pub mode: RecipeMode,
+    pub format: RecipeFormat,
+    pub provider: RecipeProvider,
+    pub source: String,
+    pub output: String,
+    pub is_default: bool,
+}
+
 /// A manifest of named snapshot targets, loaded from a TOML file.
 ///
 /// Supports two TOML formats:
@@ -184,36 +218,34 @@ impl Manifest {
         }
     }
 
-    /// Select a target by name, applying default / single-target ergonomics when
-    /// `name` is `None`.
-    ///
-    /// Rules:
-    /// - `Some(n)` → look up by name; error (listing available names in sorted order)
-    ///   if not found.
-    /// - `None` + `default_target` set → use it; error if it names a nonexistent target.
-    /// - `None` + exactly 1 target + no `default_target` → auto-select (covers both
-    ///   legacy flat files and new single-target manifests without requiring `--target`).
-    /// - `None` + 0 targets → error.
-    /// - `None` + >1 targets + no `default_target` → error listing targets and
-    ///   instructing the user to use `--target`.
-    pub fn select(&self, name: Option<&str>) -> Result<&Recipe, GitClosureError> {
+    /// Internal: select a target entry by name (key + recipe), applying default /
+    /// single-target ergonomics. Returns a `(&str, &Recipe)` tuple.
+    fn select_entry(&self, name: Option<&str>) -> Result<(&str, &Recipe), GitClosureError> {
         match name {
-            Some(n) => self.targets.get(n).ok_or_else(|| {
-                let avail: Vec<&str> = self.targets.keys().map(|s| s.as_str()).collect();
-                GitClosureError::Parse(format!(
-                    "target {n:?} not found; available: {}",
-                    avail.join(", ")
-                ))
-            }),
+            Some(n) => self
+                .targets
+                .get_key_value(n)
+                .map(|(k, v)| (k.as_str(), v))
+                .ok_or_else(|| {
+                    let avail: Vec<&str> = self.targets.keys().map(|s| s.as_str()).collect();
+                    GitClosureError::Parse(format!(
+                        "target {n:?} not found; available: {}",
+                        avail.join(", ")
+                    ))
+                }),
             None => {
                 if let Some(d) = &self.default_target {
-                    self.targets.get(d.as_str()).ok_or_else(|| {
-                        GitClosureError::Parse(format!(
-                            "default_target {d:?} is not defined in [targets.*]"
-                        ))
-                    })
+                    self.targets
+                        .get_key_value(d.as_str())
+                        .map(|(k, v)| (k.as_str(), v))
+                        .ok_or_else(|| {
+                            GitClosureError::Parse(format!(
+                                "default_target {d:?} is not defined in [targets.*]"
+                            ))
+                        })
                 } else if self.targets.len() == 1 {
-                    Ok(self.targets.values().next().unwrap())
+                    let (k, v) = self.targets.iter().next().unwrap();
+                    Ok((k.as_str(), v))
                 } else if self.targets.is_empty() {
                     Err(GitClosureError::Parse(
                         "manifest has no targets".to_string(),
@@ -228,6 +260,44 @@ impl Manifest {
                 }
             }
         }
+    }
+
+    /// Select a target by name, applying default / single-target ergonomics when
+    /// `name` is `None`.
+    ///
+    /// Rules:
+    /// - `Some(n)` → look up by name; error (listing available names in sorted order)
+    ///   if not found.
+    /// - `None` + `default_target` set → use it; error if it names a nonexistent target.
+    /// - `None` + exactly 1 target + no `default_target` → auto-select (covers both
+    ///   legacy flat files and new single-target manifests without requiring `--target`).
+    /// - `None` + 0 targets → error.
+    /// - `None` + >1 targets + no `default_target` → error listing targets and
+    ///   instructing the user to use `--target`.
+    pub fn select(&self, name: Option<&str>) -> Result<&Recipe, GitClosureError> {
+        self.select_entry(name).map(|(_, recipe)| recipe)
+    }
+
+    /// Inspect the resolved detail of a single target.
+    ///
+    /// Applies the same selection semantics as [`select`]: auto-selects when
+    /// `name` is `None` and either a `default_target` is set or exactly one
+    /// target exists.
+    ///
+    /// Path fields (`source`, `output`) reflect the values stored in `targets`;
+    /// they are absolute when the manifest was loaded via [`manifest_from_file`].
+    pub fn inspect(&self, name: Option<&str>) -> Result<TargetDetail, GitClosureError> {
+        let (target_name, recipe) = self.select_entry(name)?;
+        let is_default = self.default_target.as_deref() == Some(target_name);
+        Ok(TargetDetail {
+            name: target_name.to_string(),
+            mode: recipe.mode.clone(),
+            format: recipe.format.clone(),
+            provider: recipe.provider.clone(),
+            source: recipe.source.clone(),
+            output: recipe.output.clone(),
+            is_default,
+        })
     }
 }
 
